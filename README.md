@@ -20,6 +20,9 @@ https://academy.langchain.com/courses/take/foundation-introduction-to-langchain-
     - TAVILY_API_KEY
     - LANGSMITH_API_KEY
 
+### LangSmith Studio
+To run LangSmith Studio, you need to have the `.py` with agent information. Then have `langgraph.json` file that is pointing towards the correct environment file and python file. If all is correct, a new browser window will open with the graph and a web interface for you to directly speak to your agent.
+
 ## My Feedback
 
 - Module 1 was great! As someone who prompts ChatGPT and Gemini, it's so good to translate the knowledge I have with the actual inner workings of an agent. The concept sounds scary but very familar to Power Automate and Flows!

@@ -22,9 +22,7 @@ def web_search(query: str) -> Dict[str, Any]:
 agent_nutrition = create_agent(
     model="gpt-5-nano",
     tools = [web_search],
-    checkpointer=InMemorySaver(),  
-    streaming=True,
-    max_token = 50,
+    #checkpointer=InMemorySaver(),  This doesnt work for Langgraph
     system_prompt = """
         You are a personal nutritionist who can give suggestions on food recipes that is leftover in the fridge or cupboards of the user.
         You need to ask the user what their nutrional goals are and what human digestion issues they may have in case they have food intollerance.
