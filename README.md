@@ -22,6 +22,7 @@ https://academy.langchain.com/courses/take/foundation-introduction-to-langchain-
 
 ### LangSmith Studio
 To run LangSmith Studio, you need to have the `.py` with agent information. Then have `langgraph.json` file that is pointing towards the correct environment file and python file. If all is correct, a new browser window will open with the graph and a web interface for you to directly speak to your agent.
+Once done, run `langgraph dev` in the terminal being at the root directory to run LangSmith.
 
 ## My Feedback
 
