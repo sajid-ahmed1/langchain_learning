@@ -1,0 +1,7 @@
+{
+    "dependencies": ["."],
+    "graphs": {
+        "agent": "./notebook/agent_nutrition.py:agent_nutrition"
+    },
+    "env": ".env"
+  }
