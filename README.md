@@ -28,3 +28,4 @@ Once done, run `langgraph dev` in the terminal being at the root directory to ru
 
 - Module 1 was great! As someone who prompts ChatGPT and Gemini, it's so good to translate the knowledge I have with the actual inner workings of an agent. The concept sounds scary but very familar to Power Automate and Flows!
 - Module 2 was even better! Really getting handson with the Supervisor subagent framework to have my wife's struggle automated was super cool! It does take practise but so worth it at the end! Link to trace: https://smith.langchain.com/public/3ac4fe7b-cbcb-400c-8f00-efacd5db59da/r
+- Module 3 was good but needs practise! Especially taking a agent into production using Vercel
