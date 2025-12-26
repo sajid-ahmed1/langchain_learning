@@ -82,7 +82,7 @@ class MeetUpState(AgentState):
     food_place: str
     activity_place: str
 
-    from langchain.agents import create_agent
+from langchain.agents import create_agent
 
 # create subagents
 
