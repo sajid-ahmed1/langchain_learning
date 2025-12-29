@@ -339,28 +339,29 @@ export default function Home() {
           flex-shrink: 0;
         }
 
-        .rating {
+        :global(.rating) {
           display: inline-flex;
           align-items: center;
           gap: 6px;
           font-size: 12px;
-          color: #ffffff;
-          border: 1px solid rgba(255, 255, 255, 0.16);
+          color: rgba(255, 255, 255, 0.95);
+          border: 1px solid rgba(255, 255, 255, 0.2);
           padding: 6px 10px;
           border-radius: 999px;
-          background: rgba(255, 255, 255, 0.06);
+          background: rgba(255, 255, 255, 0.12);
+          font-weight: 600;
         }
 
-        .ratingMuted {
+        :global(.ratingMuted) {
           font-size: 12px;
-          color: rgba(255, 255, 255, 0.65);
-          border: 1px solid rgba(255, 255, 255, 0.12);
+          color: rgba(255, 255, 255, 0.78);
+          border: 1px solid rgba(255, 255, 255, 0.18);
           padding: 6px 10px;
           border-radius: 999px;
-          background: rgba(255, 255, 255, 0.05);
+          background: rgba(255, 255, 255, 0.1);
         }
 
-        .star {
+        :global(.star) {
           color: #f5c542;
         }
 
