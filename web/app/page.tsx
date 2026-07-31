@@ -2,6 +2,20 @@
 
 import { useMemo, useState } from "react";
 
+type TravelOption = { mode: string; duration_minutes: number; notes: string };
+
+type OptionTravel = {
+  from_person_1?: TravelOption[];
+  from_person_2?: TravelOption[];
+  origin_1?: string;
+  origin_2?: string;
+  destination?: string;
+  same?: boolean;
+  approximate?: boolean;
+};
+
+type PlanInclude = "both" | "food" | "activities";
+
 type Option = {
   name?: string;
   title?: string;
@@ -11,6 +25,7 @@ type Option = {
   source_url?: string;
   rating?: number | null;
   highlights?: string[];
+  travel?: OptionTravel;
 };
 
 type ApiResult = {
@@ -18,8 +33,6 @@ type ApiResult = {
   food_options?: Option[];
   activity_options?: Option[];
 };
-
-type TravelOption = { mode: string; duration_minutes: number; notes: string };
 
 type TravelBlock = {
   from_person_1?: TravelOption[];
@@ -31,6 +44,12 @@ type TravelBlock = {
 type ApiResponse = {
   ok: boolean;
   result?: ApiResult;
+  area?: {
+    label?: string;
+    precise?: string;
+    district?: string;
+    postcode?: string;
+  };
   error?: string;
   travel?: TravelBlock;
   midpoint?: { lat: number; lon: number };
@@ -50,23 +69,113 @@ function Stars({ rating }: { rating: number | null | undefined }) {
   );
 }
 
-function TravelTable({ title, items }: { title: string; items?: TravelOption[] }) {
+function ModeIcon({ mode }: { mode: string }) {
+  const common = {
+    width: 18,
+    height: 18,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  if (mode.toLowerCase() === "car") {
+    return (
+      <svg {...common}>
+        <path d="M5 17h14M4 17v-4l2-5h12l2 5v4" />
+        <path d="M6 17v2M18 17v2" />
+        <circle cx="8" cy="13.5" r="1" />
+        <circle cx="16" cy="13.5" r="1" />
+      </svg>
+    );
+  }
+
+  if (mode.toLowerCase() === "train") {
+    return (
+      <svg {...common}>
+        <rect x="6" y="3" width="12" height="13" rx="3" />
+        <path d="M6 9h12" />
+        <path d="M9 19l-2 2M15 19l2 2" />
+        <circle cx="9.5" cy="13" r="0.8" />
+        <circle cx="14.5" cy="13" r="0.8" />
+      </svg>
+    );
+  }
+
   return (
-    <div className="travelCard">
-      <div className="travelTitle">{title}</div>
-      {items?.length ? (
-        <div className="travelList">
-          {items.map((t) => (
-            <div className="travelRow" key={`${title}-${t.mode}`}>
-              <div className="travelMode">{t.mode}</div>
-              <div className="travelTime">{t.duration_minutes} min</div>
-              <div className="travelNotes">{t.notes}</div>
+    <svg {...common}>
+      <rect x="4" y="4" width="16" height="12" rx="2.5" />
+      <path d="M4 10h16" />
+      <path d="M7 16v2.5M17 16v2.5" />
+      <circle cx="8" cy="13.2" r="0.8" />
+      <circle cx="16" cy="13.2" r="0.8" />
+    </svg>
+  );
+}
+
+// Keep a stable left-to-right order rather than the API's sort-by-time.
+const MODE_ORDER = ["Car", "Train", "Bus"];
+
+function BubbleRow({ label, items }: { label: string; items?: TravelOption[] }) {
+  if (!items?.length) return null;
+
+  return (
+    <div className="bubbleGroup">
+      <div className="bubbleLabel">{label}</div>
+      <div className="bubbles">
+        {MODE_ORDER.map((mode) => {
+          const match = items.find((t) => t.mode.toLowerCase() === mode.toLowerCase());
+          if (!match) return null;
+
+          return (
+            <div className={`bubble bubble-${mode.toLowerCase()}`} key={mode}>
+              <span className="bubbleIcon">
+                <ModeIcon mode={mode} />
+              </span>
+              <span className="bubbleBody">
+                <span className="bubbleMode">{mode}</span>
+                <span className="bubbleTime">{match.duration_minutes} min</span>
+              </span>
             </div>
-          ))}
-        </div>
-      ) : (
-        <div className="empty">No travel estimates.</div>
-      )}
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Travel time to one specific venue, per person, spelled out so it is obvious
+ * where each set of times is taking you.
+ */
+function TravelBubbles({ travel }: { travel?: OptionTravel }) {
+  const p1 = travel?.from_person_1;
+  const p2 = travel?.from_person_2;
+  if (!p1?.length) return null;
+
+  const to = travel?.destination ? ` to ${travel.destination}` : "";
+  const from1 = travel?.origin_1 ? `From ${travel.origin_1}` : "From Person 1";
+  const from2 = travel?.origin_2 ? `From ${travel.origin_2}` : "From Person 2";
+
+  if (travel?.same || !p2?.length) {
+    const both =
+      travel?.origin_1 && travel?.origin_2
+        ? `From ${travel.origin_1} and ${travel.origin_2}${to}`
+        : `Travel time${to}`;
+    return (
+      <div className="travelBlock">
+        <BubbleRow label={both} items={p1} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="travelBlock">
+      <BubbleRow label={`${from1}${to}`} items={p1} />
+      <BubbleRow label={`${from2}${to}`} items={p2} />
     </div>
   );
 }
@@ -75,6 +184,7 @@ export default function Home() {
   const [postcode1, setPostcode1] = useState("");
   const [postcode2, setPostcode2] = useState("");
   const [preferences, setPreferences] = useState("");
+  const [include, setInclude] = useState<PlanInclude>("both");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -92,7 +202,7 @@ export default function Home() {
       const res = await fetch("/api/plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ postcode1, postcode2, preferences }),
+        body: JSON.stringify({ postcode1, postcode2, preferences, include }),
       });
 
       const json = (await res.json()) as ApiResponse;
@@ -110,19 +220,6 @@ export default function Home() {
   }
 
   const result = data?.result as ApiResult | undefined;
-  const travel = data?.travel as TravelBlock | undefined;
-
-  function travelLooksSame(a?: TravelOption[], b?: TravelOption[]) {
-    if (!a?.length || !b?.length) return false;
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      if (a[i].mode !== b[i].mode) return false;
-      if (a[i].duration_minutes !== b[i].duration_minutes) return false;
-    }
-    return true;
-  }
-
-  const sameTravel = travelLooksSame(travel?.from_person_1, travel?.from_person_2);
 
   return (
     <div className="page">
@@ -170,6 +267,19 @@ export default function Home() {
                 placeholder="e.g. vegan-friendly, budget under £20, no alcohol venues"
               />
             </label>
+
+            <label className="field span2">
+              <span className="label">What do you want to see?</span>
+              <select
+                className="input select"
+                value={include}
+                onChange={(e) => setInclude(e.target.value as PlanInclude)}
+              >
+                <option value="both">Food and activities</option>
+                <option value="food">Food only</option>
+                <option value="activities">Activities only</option>
+              </select>
+            </label>
           </div>
 
           <div className="actions">
@@ -200,37 +310,15 @@ export default function Home() {
           <section className="results" aria-label="Results">
             <div className="resultsHeader">
               <h2 className="resultsTitle">Your meetup options</h2>
-              {result?.midpoint_area && (
-                <div className="chip">Midpoint area: {result.midpoint_area}</div>
+              {(data?.area?.label || result?.midpoint_area) && (
+                <div className="chip">
+                  Meet around: {data?.area?.label ?? result?.midpoint_area}
+                </div>
               )}
             </div>
 
-            {travel && (
-              <div className="travel">
-                <div className="travelHeader">
-                  <h3 className="travelHeaderTitle">Travel options (sorted by time)</h3>
-                </div>
-
-                {sameTravel ? (
-                  <>
-                    <div className="travelNote">
-                      These estimates are to the midpoint, so Person 1 and Person 2 are the same distance.
-                    </div>
-                    <div className="travelGridOne">
-                      <TravelTable title="To the midpoint" items={travel.from_person_1} />
-                    </div>
-                  </>
-                ) : (
-                  <div className="travelGrid">
-                    <TravelTable title="From Person 1" items={travel.from_person_1} />
-                    <TravelTable title="From Person 2" items={travel.from_person_2} />
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="cards">
-              <div className="card">
+            <div className={`cards ${include === "both" ? "" : "cardsSingle"}`}>
+              <div className="card" hidden={include === "activities"}>
                 <div className="cardTitle">Food (Top 3)</div>
                 <div className="cardBody">
                   {(result?.food_options?.length ? result.food_options : []).map((o, idx) => (
@@ -259,6 +347,10 @@ export default function Home() {
                           ))}
                         </ul>
                       ) : null}
+                      <TravelBubbles travel={o.travel} />
+                      {o.travel?.approximate ? (
+                        <div className="approxNote">Times are to the midpoint area (exact spot not found).</div>
+                      ) : null}
                     </div>
                   ))}
 
@@ -268,7 +360,7 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="card">
+              <div className="card" hidden={include === "food"}>
                 <div className="cardTitle">Activities (Top 3)</div>
                 <div className="cardBody">
                   {(result?.activity_options?.length ? result.activity_options : []).map((o, idx) => (
@@ -295,6 +387,10 @@ export default function Home() {
                             <li key={`act-h-${idx}-${i}`}>{h}</li>
                           ))}
                         </ul>
+                      ) : null}
+                      <TravelBubbles travel={o.travel} />
+                      {o.travel?.approximate ? (
+                        <div className="approxNote">Times are to the midpoint area (exact spot not found).</div>
                       ) : null}
                     </div>
                   ))}
@@ -375,113 +471,130 @@ export default function Home() {
           margin: 4px 0;
         }
 
-        .travel {
-          margin-top: 12px;
-          border-radius: 16px;
-          background: linear-gradient(160deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.7));
-          border: 1px solid rgba(148, 163, 184, 0.25);
-          box-shadow: 0 12px 40px rgba(2, 6, 23, 0.45);
-          padding: 12px;
-          color: rgba(226, 232, 240, 0.95);
+        .select {
+          appearance: none;
+          cursor: pointer;
+          background-image: linear-gradient(45deg, transparent 50%, rgba(255, 255, 255, 0.6) 50%),
+            linear-gradient(135deg, rgba(255, 255, 255, 0.6) 50%, transparent 50%);
+          background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+          background-size: 5px 5px, 5px 5px;
+          background-repeat: no-repeat;
+          padding-right: 34px;
         }
 
-        .travelHeader {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 12px;
-          margin-bottom: 10px;
+        .select option {
+          background: #0b1020;
+          color: rgba(255, 255, 255, 0.92);
         }
 
-        .travelHeaderTitle {
-          margin: 0;
-          font-size: 13px;
-          color: #f8fafc;
-          letter-spacing: 0.02em;
-        }
-
-        .travelChips {
-          display: flex;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-
-        .travelGrid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 12px;
-        }
-
-        .travelNote {
-          margin: 8px 0 12px;
-          color: rgba(226, 232, 240, 0.7);
-          font-size: 12px;
-          line-height: 1.4;
-        }
-
-        .travelGridOne {
-          display: grid;
+        /* Needs to out-specify the two-column .cards rule below. */
+        .cards.cardsSingle {
           grid-template-columns: 1fr;
-          gap: 12px;
         }
 
-        :global(.travelCard) {
-          border-radius: 14px;
-          background: rgba(15, 23, 42, 0.55);
-          border: 1px solid rgba(148, 163, 184, 0.22);
-          padding: 12px;
-          backdrop-filter: blur(6px);
-        }
-
-        :global(.travelTitle) {
-          font-weight: 700;
-          color: #f8fafc;
-          margin-bottom: 10px;
-          font-size: 13px;
-        }
-
-        :global(.travelList) {
+        :global(.travelBlock) {
           display: grid;
+          gap: 10px;
+          margin-top: 12px;
+        }
+
+        :global(.bubbleGroup) {
+          display: grid;
+          gap: 6px;
+        }
+
+        :global(.bubbleLabel) {
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.55);
+          letter-spacing: 0.01em;
+        }
+
+        :global(.bubbles) {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
           gap: 8px;
         }
 
-        :global(.travelRow) {
-          display: grid;
-          grid-template-columns: 88px 78px 1fr;
-          gap: 10px;
-          align-items: baseline;
-          padding: 10px 12px;
-          border-radius: 12px;
-          background: rgba(2, 6, 23, 0.55);
-          border: 1px solid rgba(148, 163, 184, 0.2);
-          box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+        :global(.bubble) {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          padding: 9px 10px;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+          transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
         }
 
-        :global(.travelMode) {
-          color: #e2e8f0;
+        :global(.bubble:hover) {
+          transform: translateY(-1px);
+          background: rgba(255, 255, 255, 0.09);
+        }
+
+        :global(.bubbleIcon) {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 30px;
+          height: 30px;
+          flex-shrink: 0;
+          border-radius: 999px;
+          color: #fff;
+        }
+
+        :global(.bubble-car .bubbleIcon) {
+          background: linear-gradient(140deg, rgba(99, 102, 241, 0.95), rgba(79, 70, 229, 0.75));
+          box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+        }
+
+        :global(.bubble-train .bubbleIcon) {
+          background: linear-gradient(140deg, rgba(16, 185, 129, 0.95), rgba(5, 150, 105, 0.75));
+          box-shadow: 0 4px 14px rgba(16, 185, 129, 0.32);
+        }
+
+        :global(.bubble-bus .bubbleIcon) {
+          background: linear-gradient(140deg, rgba(244, 114, 63, 0.95), rgba(234, 88, 12, 0.75));
+          box-shadow: 0 4px 14px rgba(244, 114, 63, 0.3);
+        }
+
+        :global(.bubble-car:hover) {
+          border-color: rgba(99, 102, 241, 0.5);
+        }
+
+        :global(.bubble-train:hover) {
+          border-color: rgba(16, 185, 129, 0.5);
+        }
+
+        :global(.bubble-bus:hover) {
+          border-color: rgba(244, 114, 63, 0.5);
+        }
+
+        :global(.bubbleBody) {
+          display: flex;
+          flex-direction: column;
+          min-width: 0;
+          line-height: 1.25;
+        }
+
+        :global(.bubbleMode) {
+          font-size: 11px;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+          color: rgba(255, 255, 255, 0.55);
+        }
+
+        :global(.bubbleTime) {
+          font-size: 13px;
           font-weight: 650;
-          font-size: 13px;
-          letter-spacing: 0.02em;
-          background: rgba(59, 130, 246, 0.14);
-          border: 1px solid rgba(59, 130, 246, 0.35);
-          padding: 4px 8px;
-          border-radius: 999px;
-          justify-self: start;
+          color: rgba(255, 255, 255, 0.94);
+          white-space: nowrap;
         }
 
-        :global(.travelTime) {
-          color: #f8fafc;
-          font-size: 13px;
-          background: rgba(16, 185, 129, 0.18);
-          border: 1px solid rgba(16, 185, 129, 0.4);
-          padding: 4px 8px;
-          border-radius: 999px;
-          justify-self: start;
-        }
-
-        :global(.travelNotes) {
-          color: rgba(226, 232, 240, 0.8);
-          font-size: 12px;
+        :global(.approxNote) {
+          margin-top: 8px;
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.5);
         }
 
         .page {
@@ -868,8 +981,23 @@ export default function Home() {
             align-items: flex-start;
           }
 
-          .travelGrid {
-            grid-template-columns: 1fr;
+          /* Keep the three modes side by side; stack the icon above the text
+             so they still fit on a narrow screen. */
+          :global(.bubble) {
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 6px;
+            border-radius: 16px;
+            text-align: center;
+          }
+
+          :global(.bubbleBody) {
+            align-items: center;
+          }
+
+          :global(.bubbleTime) {
+            font-size: 12px;
           }
         }
       `}</style>
