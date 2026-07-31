@@ -7,9 +7,14 @@ type TravelOption = { mode: string; duration_minutes: number; notes: string };
 type OptionTravel = {
   from_person_1?: TravelOption[];
   from_person_2?: TravelOption[];
+  origin_1?: string;
+  origin_2?: string;
+  destination?: string;
   same?: boolean;
   approximate?: boolean;
 };
+
+type PlanInclude = "both" | "food" | "activities";
 
 type Option = {
   name?: string;
@@ -39,6 +44,12 @@ type TravelBlock = {
 type ApiResponse = {
   ok: boolean;
   result?: ApiResult;
+  area?: {
+    label?: string;
+    precise?: string;
+    district?: string;
+    postcode?: string;
+  };
   error?: string;
   travel?: TravelBlock;
   midpoint?: { lat: number; lon: number };
@@ -105,42 +116,66 @@ function ModeIcon({ mode }: { mode: string }) {
   );
 }
 
-/** Three horizontal bubbles (car / train / bus) for one venue. */
+// Keep a stable left-to-right order rather than the API's sort-by-time.
+const MODE_ORDER = ["Car", "Train", "Bus"];
+
+function BubbleRow({ label, items }: { label: string; items?: TravelOption[] }) {
+  if (!items?.length) return null;
+
+  return (
+    <div className="bubbleGroup">
+      <div className="bubbleLabel">{label}</div>
+      <div className="bubbles">
+        {MODE_ORDER.map((mode) => {
+          const match = items.find((t) => t.mode.toLowerCase() === mode.toLowerCase());
+          if (!match) return null;
+
+          return (
+            <div className={`bubble bubble-${mode.toLowerCase()}`} key={mode}>
+              <span className="bubbleIcon">
+                <ModeIcon mode={mode} />
+              </span>
+              <span className="bubbleBody">
+                <span className="bubbleMode">{mode}</span>
+                <span className="bubbleTime">{match.duration_minutes} min</span>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Travel time to one specific venue, per person, spelled out so it is obvious
+ * where each set of times is taking you.
+ */
 function TravelBubbles({ travel }: { travel?: OptionTravel }) {
   const p1 = travel?.from_person_1;
   const p2 = travel?.from_person_2;
   if (!p1?.length) return null;
 
-  // Keep a stable left-to-right order rather than the API's sort-by-time.
-  const order = ["Car", "Train", "Bus"];
-  const byMode = (items: TravelOption[] | undefined, mode: string) =>
-    items?.find((t) => t.mode.toLowerCase() === mode.toLowerCase());
+  const to = travel?.destination ? ` to ${travel.destination}` : "";
+  const from1 = travel?.origin_1 ? `From ${travel.origin_1}` : "From Person 1";
+  const from2 = travel?.origin_2 ? `From ${travel.origin_2}` : "From Person 2";
+
+  if (travel?.same || !p2?.length) {
+    const both =
+      travel?.origin_1 && travel?.origin_2
+        ? `From ${travel.origin_1} and ${travel.origin_2}${to}`
+        : `Travel time${to}`;
+    return (
+      <div className="travelBlock">
+        <BubbleRow label={both} items={p1} />
+      </div>
+    );
+  }
 
   return (
-    <div className="bubbles">
-      {order.map((mode) => {
-        const a = byMode(p1, mode);
-        if (!a) return null;
-        const b = byMode(p2, mode);
-
-        return (
-          <div className={`bubble bubble-${mode.toLowerCase()}`} key={mode}>
-            <span className="bubbleIcon">
-              <ModeIcon mode={mode} />
-            </span>
-            <span className="bubbleBody">
-              <span className="bubbleMode">{mode}</span>
-              {travel?.same || !b ? (
-                <span className="bubbleTime">{a.duration_minutes} min</span>
-              ) : (
-                <span className="bubbleTime">
-                  {a.duration_minutes} / {b.duration_minutes} min
-                </span>
-              )}
-            </span>
-          </div>
-        );
-      })}
+    <div className="travelBlock">
+      <BubbleRow label={`${from1}${to}`} items={p1} />
+      <BubbleRow label={`${from2}${to}`} items={p2} />
     </div>
   );
 }
@@ -149,6 +184,7 @@ export default function Home() {
   const [postcode1, setPostcode1] = useState("");
   const [postcode2, setPostcode2] = useState("");
   const [preferences, setPreferences] = useState("");
+  const [include, setInclude] = useState<PlanInclude>("both");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -166,7 +202,7 @@ export default function Home() {
       const res = await fetch("/api/plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ postcode1, postcode2, preferences }),
+        body: JSON.stringify({ postcode1, postcode2, preferences, include }),
       });
 
       const json = (await res.json()) as ApiResponse;
@@ -231,6 +267,19 @@ export default function Home() {
                 placeholder="e.g. vegan-friendly, budget under £20, no alcohol venues"
               />
             </label>
+
+            <label className="field span2">
+              <span className="label">What do you want to see?</span>
+              <select
+                className="input select"
+                value={include}
+                onChange={(e) => setInclude(e.target.value as PlanInclude)}
+              >
+                <option value="both">Food and activities</option>
+                <option value="food">Food only</option>
+                <option value="activities">Activities only</option>
+              </select>
+            </label>
           </div>
 
           <div className="actions">
@@ -261,17 +310,15 @@ export default function Home() {
           <section className="results" aria-label="Results">
             <div className="resultsHeader">
               <h2 className="resultsTitle">Your meetup options</h2>
-              {result?.midpoint_area && (
-                <div className="chip">Midpoint area: {result.midpoint_area}</div>
+              {(data?.area?.label || result?.midpoint_area) && (
+                <div className="chip">
+                  Meet around: {data?.area?.label ?? result?.midpoint_area}
+                </div>
               )}
             </div>
 
-            <div className="travelLegend">
-              Travel times per place — <strong>Person 1 / Person 2</strong>, door to door.
-            </div>
-
-            <div className="cards">
-              <div className="card">
+            <div className={`cards ${include === "both" ? "" : "cardsSingle"}`}>
+              <div className="card" hidden={include === "activities"}>
                 <div className="cardTitle">Food (Top 3)</div>
                 <div className="cardBody">
                   {(result?.food_options?.length ? result.food_options : []).map((o, idx) => (
@@ -313,7 +360,7 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="card">
+              <div className="card" hidden={include === "food"}>
                 <div className="cardTitle">Activities (Top 3)</div>
                 <div className="cardBody">
                   {(result?.activity_options?.length ? result.activity_options : []).map((o, idx) => (
@@ -424,22 +471,48 @@ export default function Home() {
           margin: 4px 0;
         }
 
-        .travelLegend {
-          margin: 2px 0 10px;
-          font-size: 12px;
-          color: rgba(255, 255, 255, 0.55);
+        .select {
+          appearance: none;
+          cursor: pointer;
+          background-image: linear-gradient(45deg, transparent 50%, rgba(255, 255, 255, 0.6) 50%),
+            linear-gradient(135deg, rgba(255, 255, 255, 0.6) 50%, transparent 50%);
+          background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+          background-size: 5px 5px, 5px 5px;
+          background-repeat: no-repeat;
+          padding-right: 34px;
         }
 
-        .travelLegend strong {
-          color: rgba(255, 255, 255, 0.75);
-          font-weight: 600;
+        .select option {
+          background: #0b1020;
+          color: rgba(255, 255, 255, 0.92);
+        }
+
+        /* Needs to out-specify the two-column .cards rule below. */
+        .cards.cardsSingle {
+          grid-template-columns: 1fr;
+        }
+
+        :global(.travelBlock) {
+          display: grid;
+          gap: 10px;
+          margin-top: 12px;
+        }
+
+        :global(.bubbleGroup) {
+          display: grid;
+          gap: 6px;
+        }
+
+        :global(.bubbleLabel) {
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.55);
+          letter-spacing: 0.01em;
         }
 
         :global(.bubbles) {
           display: grid;
           grid-template-columns: repeat(3, 1fr);
           gap: 8px;
-          margin-top: 12px;
         }
 
         :global(.bubble) {
