@@ -272,6 +272,8 @@ function PlaceItem({
   const [choice, setChoice] = useState<Choice | null>(null);
   const [open, setOpen] = useState(false);
   const [when, setWhen] = useState(() => toInputValue(defaultMeetTime()));
+  const [shareState, setShareState] = useState<"idle" | "copied" | "manual">("idle");
+  const [shareText, setShareText] = useState("");
 
   const place = prettyOptionName(option);
   const details = option.details ?? option.why ?? option.description;
@@ -285,6 +287,45 @@ function PlaceItem({
   const maps = choice
     ? directionsUrls({ choice, place, areaLabel, location: option.location })
     : null;
+
+  /**
+   * Shares via the OS share sheet where available (phones), otherwise copies to
+   * the clipboard, otherwise shows the text so it can be copied by hand.
+   */
+  async function sharePlan() {
+    if (!choice || !maps) return;
+
+    const text = buildItinerary({
+      place,
+      areaLabel,
+      travel: option.travel,
+      choice,
+      start,
+      mapsUrl: maps.google,
+      sourceUrl: option.source_url,
+    });
+
+    setShareText(text);
+
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({ title: `Halfway: ${place}`, text });
+        setShareState("idle");
+        return;
+      } catch (e: unknown) {
+        // Cancelling the share sheet isn't a failure to fall back from.
+        if (e instanceof Error && e.name === "AbortError") return;
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setShareState("copied");
+      window.setTimeout(() => setShareState("idle"), 2500);
+    } catch {
+      setShareState("manual");
+    }
+  }
 
   return (
     <div className={`item ${choice ? "itemOn" : ""}`}>
@@ -356,9 +397,21 @@ function PlaceItem({
             <CalendarIcon />
             Add to calendar
           </button>
+          <button type="button" className="shareButton" onClick={sharePlan}>
+            <ShareIcon />
+            {shareState === "copied" ? "Itinerary copied" : "Share plan"}
+          </button>
+
           <span className="planSummary">
             {place} · {choice.mode.toLowerCase()} from {choice.origin} ({choice.minutes} min)
           </span>
+
+          {shareState === "manual" ? (
+            <div className="shareFallback">
+              <div className="shareFallbackHint">Copy this and send it on:</div>
+              <textarea className="shareTextarea" readOnly rows={9} value={shareText} />
+            </div>
+          ) : null}
 
           {open ? (
             <div className="popover" role="dialog" aria-label={`Add ${place} to a calendar`}>
@@ -482,6 +535,101 @@ function directionsUrls({
     `&dirflg=${driving ? "d" : "r"}`;
 
   return { google, apple };
+}
+
+function formatMeetTime(d: Date) {
+  return d.toLocaleString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function clockAfterOffset(start: Date, minutesBefore: number) {
+  const d = new Date(start.getTime() - minutesBefore * 60 * 1000);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Plain-text itinerary, written to paste straight into a group chat. */
+function buildItinerary({
+  place,
+  areaLabel,
+  travel,
+  choice,
+  start,
+  mapsUrl,
+  sourceUrl,
+}: {
+  place: string;
+  areaLabel?: string;
+  travel?: OptionTravel;
+  choice: Choice;
+  start: Date;
+  mapsUrl: string;
+  sourceUrl?: string;
+}) {
+  const mode = choice.mode.toLowerCase();
+  const forMode = (items?: TravelOption[]) =>
+    items?.find((t) => t.mode.toLowerCase() === mode);
+
+  const t1 = forMode(travel?.from_person_1);
+  const t2 = forMode(travel?.from_person_2);
+
+  const lines = [`Halfway plan — ${place}`, ""];
+
+  if (areaLabel) lines.push(`Where: ${areaLabel}`);
+  lines.push(`When: ${formatMeetTime(start)} (2 hours)`);
+  lines.push("", `Getting there by ${mode}:`);
+
+  if (travel?.same && t1) {
+    const origins = [travel.origin_1, travel.origin_2].filter(Boolean).join(" and ");
+    lines.push(
+      `  • ${origins || "both postcodes"} — ${t1.duration_minutes} min, ` +
+        `leave by ${clockAfterOffset(start, t1.duration_minutes)}`,
+    );
+  } else {
+    if (t1) {
+      lines.push(
+        `  • ${travel?.origin_1 ?? "Person 1"} — ${t1.duration_minutes} min, ` +
+          `leave by ${clockAfterOffset(start, t1.duration_minutes)}`,
+      );
+    }
+    if (t2) {
+      lines.push(
+        `  • ${travel?.origin_2 ?? "Person 2"} — ${t2.duration_minutes} min, ` +
+          `leave by ${clockAfterOffset(start, t2.duration_minutes)}`,
+      );
+    }
+  }
+
+  lines.push("", `Directions: ${mapsUrl}`);
+  if (sourceUrl) lines.push(`More about the place: ${sourceUrl}`);
+  lines.push("", "Planned with Halfway.");
+
+  return lines.join("\n");
+}
+
+function ShareIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="18" cy="5" r="2.6" />
+      <circle cx="6" cy="12" r="2.6" />
+      <circle cx="18" cy="19" r="2.6" />
+      <path d="M8.3 10.8l7.4-4.3M8.3 13.2l7.4 4.3" />
+    </svg>
+  );
 }
 
 function MapPinIcon() {
@@ -1284,6 +1432,51 @@ export default function Home() {
 
         :global(.calendarButton:hover) {
           filter: brightness(1.06);
+        }
+
+        :global(.shareButton) {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 9px 13px;
+          border-radius: 999px;
+          border: 1px solid rgba(125, 211, 252, 0.35);
+          background: rgba(56, 189, 248, 0.1);
+          color: rgba(224, 242, 254, 0.95);
+          font-size: 13px;
+          font-weight: 620;
+          cursor: pointer;
+          transition: background 140ms ease, border-color 140ms ease;
+        }
+
+        :global(.shareButton:hover) {
+          background: rgba(56, 189, 248, 0.2);
+          border-color: rgba(125, 211, 252, 0.6);
+        }
+
+        :global(.shareFallback) {
+          flex-basis: 100%;
+          display: grid;
+          gap: 6px;
+          margin-top: 4px;
+        }
+
+        :global(.shareFallbackHint) {
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.5);
+        }
+
+        :global(.shareTextarea) {
+          width: 100%;
+          resize: vertical;
+          padding: 10px 12px;
+          border-radius: 12px;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(9, 12, 24, 0.6);
+          color: rgba(255, 255, 255, 0.9);
+          font-size: 12px;
+          line-height: 1.5;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         }
 
         :global(.planSummary) {
