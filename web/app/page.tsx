@@ -119,7 +119,22 @@ function ModeIcon({ mode }: { mode: string }) {
 // Keep a stable left-to-right order rather than the API's sort-by-time.
 const MODE_ORDER = ["Car", "Train", "Bus"];
 
-function BubbleRow({ label, items }: { label: string; items?: TravelOption[] }) {
+/** A picked way of getting to one venue, used to build the calendar entry. */
+type Choice = { mode: string; minutes: number; origin: string };
+
+function BubbleRow({
+  label,
+  origin,
+  items,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  origin: string;
+  items?: TravelOption[];
+  selected?: Choice | null;
+  onSelect: (choice: Choice) => void;
+}) {
   if (!items?.length) return null;
 
   return (
@@ -130,8 +145,21 @@ function BubbleRow({ label, items }: { label: string; items?: TravelOption[] }) 
           const match = items.find((t) => t.mode.toLowerCase() === mode.toLowerCase());
           if (!match) return null;
 
+          const isSelected =
+            selected?.mode === match.mode &&
+            selected?.origin === origin &&
+            selected?.minutes === match.duration_minutes;
+
           return (
-            <div className={`bubble bubble-${mode.toLowerCase()}`} key={mode}>
+            <button
+              type="button"
+              className={`bubble bubble-${mode.toLowerCase()} ${isSelected ? "bubbleOn" : ""}`}
+              key={mode}
+              aria-pressed={isSelected}
+              onClick={() =>
+                onSelect({ mode: match.mode, minutes: match.duration_minutes, origin })
+              }
+            >
               <span className="bubbleIcon">
                 <ModeIcon mode={mode} />
               </span>
@@ -139,7 +167,7 @@ function BubbleRow({ label, items }: { label: string; items?: TravelOption[] }) 
                 <span className="bubbleMode">{mode}</span>
                 <span className="bubbleTime">{match.duration_minutes} min</span>
               </span>
-            </div>
+            </button>
           );
         })}
       </div>
@@ -151,33 +179,353 @@ function BubbleRow({ label, items }: { label: string; items?: TravelOption[] }) 
  * Travel time to one specific venue, per person, spelled out so it is obvious
  * where each set of times is taking you.
  */
-function TravelBubbles({ travel }: { travel?: OptionTravel }) {
+function TravelBubbles({
+  travel,
+  selected,
+  onSelect,
+}: {
+  travel?: OptionTravel;
+  selected?: Choice | null;
+  onSelect: (choice: Choice) => void;
+}) {
   const p1 = travel?.from_person_1;
   const p2 = travel?.from_person_2;
   if (!p1?.length) return null;
 
   const to = travel?.destination ? ` to ${travel.destination}` : "";
-  const from1 = travel?.origin_1 ? `From ${travel.origin_1}` : "From Person 1";
-  const from2 = travel?.origin_2 ? `From ${travel.origin_2}` : "From Person 2";
+  const origin1 = travel?.origin_1 ?? "Person 1";
+  const origin2 = travel?.origin_2 ?? "Person 2";
 
   if (travel?.same || !p2?.length) {
-    const both =
+    const bothOrigins =
       travel?.origin_1 && travel?.origin_2
-        ? `From ${travel.origin_1} and ${travel.origin_2}${to}`
-        : `Travel time${to}`;
+        ? `${travel.origin_1} and ${travel.origin_2}`
+        : "both postcodes";
     return (
       <div className="travelBlock">
-        <BubbleRow label={both} items={p1} />
+        <BubbleRow
+          label={`From ${bothOrigins}${to}`}
+          origin={bothOrigins}
+          items={p1}
+          selected={selected}
+          onSelect={onSelect}
+        />
       </div>
     );
   }
 
   return (
     <div className="travelBlock">
-      <BubbleRow label={`${from1}${to}`} items={p1} />
-      <BubbleRow label={`${from2}${to}`} items={p2} />
+      <BubbleRow
+        label={`From ${origin1}${to}`}
+        origin={origin1}
+        items={p1}
+        selected={selected}
+        onSelect={onSelect}
+      />
+      <BubbleRow
+        label={`From ${origin2}${to}`}
+        origin={origin2}
+        items={p2}
+        selected={selected}
+        onSelect={onSelect}
+      />
     </div>
   );
+}
+
+/**
+ * One suggested place. Picking a travel bubble selects how you're getting
+ * there, which unlocks the add-to-calendar popup for that place.
+ */
+function PlaceItem({
+  option,
+  index,
+  idPrefix,
+  showRating,
+  areaLabel,
+}: {
+  option: Option;
+  index: number;
+  idPrefix: string;
+  showRating: boolean;
+  areaLabel?: string;
+}) {
+  const [choice, setChoice] = useState<Choice | null>(null);
+  const [open, setOpen] = useState(false);
+  const [when, setWhen] = useState(() => toInputValue(defaultMeetTime()));
+
+  const place = prettyOptionName(option);
+  const details = option.details ?? option.why ?? option.description;
+
+  const start = useMemo(() => {
+    const parsed = new Date(when);
+    return Number.isNaN(parsed.getTime()) ? defaultMeetTime() : parsed;
+  }, [when]);
+
+  const event = choice ? buildEvent(place, areaLabel, choice, start) : null;
+
+  return (
+    <div className={`item ${choice ? "itemOn" : ""}`}>
+      <div className="itemTop">
+        <div className="itemName">
+          <span className="num">{index + 1}</span>
+          {place}
+        </div>
+        <div className="itemMeta">
+          {showRating ? <Stars rating={option.rating} /> : null}
+          {option.source_url ? (
+            <a className="link" href={option.source_url} target="_blank" rel="noreferrer">
+              Source
+            </a>
+          ) : null}
+        </div>
+      </div>
+
+      {details ? <div className="itemWhy">{details}</div> : null}
+
+      {option.highlights?.length ? (
+        <ul className="highlights">
+          {option.highlights.map((h, i) => (
+            <li key={`${idPrefix}-h-${index}-${i}`}>{h}</li>
+          ))}
+        </ul>
+      ) : null}
+
+      <TravelBubbles
+        travel={option.travel}
+        selected={choice}
+        onSelect={(next) => {
+          const same =
+            choice?.mode === next.mode &&
+            choice?.origin === next.origin &&
+            choice?.minutes === next.minutes;
+          setChoice(same ? null : next);
+          if (same) setOpen(false);
+        }}
+      />
+
+      {option.travel?.approximate ? (
+        <div className="approxNote">Times are to the midpoint area (exact spot not found).</div>
+      ) : null}
+
+      {choice && event ? (
+        <div className="planRow">
+          <button type="button" className="calendarButton" onClick={() => setOpen((v) => !v)}>
+            <CalendarIcon />
+            Add to calendar
+          </button>
+          <span className="planSummary">
+            {place} · {choice.mode.toLowerCase()} from {choice.origin} ({choice.minutes} min)
+          </span>
+
+          {open ? (
+            <div className="popover" role="dialog" aria-label={`Add ${place} to a calendar`}>
+              <label className="popLabel">
+                When are you meeting?
+                <input
+                  type="datetime-local"
+                  className="input popInput"
+                  value={when}
+                  onChange={(e) => setWhen(e.target.value)}
+                />
+              </label>
+
+              <div className="popHint">
+                Two hours booked. Leave by{" "}
+                {pad(new Date(start.getTime() - choice.minutes * 60000).getHours())}:
+                {pad(new Date(start.getTime() - choice.minutes * 60000).getMinutes())} to arrive on
+                time.
+              </div>
+
+              <div className="popActions">
+                <button type="button" className="popButton" onClick={() => downloadIcs(event)}>
+                  Apple Calendar
+                </button>
+                <a
+                  className="popButton popPrimary"
+                  href={googleCalendarUrl(event)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Google Calendar
+                </a>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="pickHint">Pick a travel option to add this to your calendar.</div>
+      )}
+    </div>
+  );
+}
+
+function Footprint({ flip }: { flip: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 32"
+      width="100%"
+      height="100%"
+      aria-hidden="true"
+      style={{ transform: flip ? "scaleX(-1)" : undefined }}
+    >
+      {/* sole */}
+      <ellipse cx="12" cy="20" rx="6.4" ry="9.2" fill="currentColor" />
+      {/* toes */}
+      <ellipse cx="7.6" cy="7.6" rx="2.5" ry="3" fill="currentColor" />
+      <ellipse cx="13" cy="5.4" rx="2" ry="2.4" fill="currentColor" />
+      <ellipse cx="17.2" cy="7.4" rx="1.6" ry="2" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Footprints walking away from you — the app's stand-in for a spinner. */
+function Footprints({ compact = false }: { compact?: boolean }) {
+  const steps = compact ? 4 : 6;
+
+  return (
+    <span className={`steps ${compact ? "stepsCompact" : ""}`} role="img" aria-label="Loading">
+      {Array.from({ length: steps }).map((_, i) => (
+        <span
+          className="step"
+          key={i}
+          style={{
+            animationDelay: `${i * 0.18}s`,
+            // Offset and toe-out each alternate print so the trail reads as a walk.
+            transform:
+              `translateY(${i % 2 === 0 ? "0px" : compact ? "5px" : "10px"}) ` +
+              `rotate(${i % 2 === 0 ? -9 : 9}deg)`,
+          }}
+        >
+          <Footprint flip={i % 2 === 1} />
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function CalendarIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="5" width="18" height="16" rx="3" />
+      <path d="M3 10h18M8 3v4M16 3v4" />
+    </svg>
+  );
+}
+
+function pad(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+/** Basic-format UTC stamp, e.g. 20260801T120000Z. */
+function toCalendarStamp(d: Date) {
+  return (
+    `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}` +
+    `T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}00Z`
+  );
+}
+
+/** Value shape for <input type="datetime-local">, which works in local time. */
+function toInputValue(d: Date) {
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
+}
+
+function defaultMeetTime() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(12, 0, 0, 0);
+  return d;
+}
+
+function escapeIcs(value: string) {
+  return value.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+}
+
+type CalendarEvent = {
+  title: string;
+  location: string;
+  description: string;
+  start: Date;
+  end: Date;
+};
+
+function buildEvent(
+  place: string,
+  areaLabel: string | undefined,
+  choice: Choice,
+  start: Date,
+): CalendarEvent {
+  const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+  const leaveBy = new Date(start.getTime() - choice.minutes * 60 * 1000);
+
+  const description = [
+    `Meeting at ${place}.`,
+    `Getting there by ${choice.mode.toLowerCase()} from ${choice.origin}: about ${choice.minutes} minutes.`,
+    `Leave by roughly ${pad(leaveBy.getHours())}:${pad(leaveBy.getMinutes())}.`,
+    "Planned with Halfway.",
+  ].join("\n");
+
+  return {
+    title: `Halfway: ${place}`,
+    location: areaLabel ? `${place}, ${areaLabel}` : place,
+    description,
+    start,
+    end,
+  };
+}
+
+function googleCalendarUrl(event: CalendarEvent) {
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: event.title,
+    dates: `${toCalendarStamp(event.start)}/${toCalendarStamp(event.end)}`,
+    details: event.description,
+    location: event.location,
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+/** Apple Calendar (and anything else that reads .ics) via a local download. */
+function downloadIcs(event: CalendarEvent) {
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Halfway//Meetup Planner//EN",
+    "BEGIN:VEVENT",
+    `UID:${Date.now()}@halfway.local`,
+    `DTSTAMP:${toCalendarStamp(new Date())}`,
+    `DTSTART:${toCalendarStamp(event.start)}`,
+    `DTEND:${toCalendarStamp(event.end)}`,
+    `SUMMARY:${escapeIcs(event.title)}`,
+    `LOCATION:${escapeIcs(event.location)}`,
+    `DESCRIPTION:${escapeIcs(event.description)}`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ];
+
+  const blob = new Blob([lines.join("\r\n")], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `halfway-${event.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 export default function Home() {
@@ -286,7 +634,7 @@ export default function Home() {
             <button className="button" onClick={plan} disabled={!canSubmit}>
               {loading ? (
                 <>
-                  <span className="spinner" aria-hidden="true" />
+                  <Footprints compact />
                   Planning…
                 </>
               ) : (
@@ -322,36 +670,14 @@ export default function Home() {
                 <div className="cardTitle">Food (Top 3)</div>
                 <div className="cardBody">
                   {(result?.food_options?.length ? result.food_options : []).map((o, idx) => (
-                    <div className="item" key={`food-${idx}`}>
-                      <div className="itemTop">
-                        <div className="itemName">
-                          <span className="num">{idx + 1}</span>
-                          {prettyOptionName(o)}
-                        </div>
-                        <div className="itemMeta">
-                          <Stars rating={o.rating} />
-                          {o.source_url ? (
-                            <a className="link" href={o.source_url} target="_blank" rel="noreferrer">
-                              Source
-                            </a>
-                          ) : null}
-                        </div>
-                      </div>
-                      {o.details || o.why || o.description ? (
-                        <div className="itemWhy">{o.details ?? o.why ?? o.description}</div>
-                      ) : null}
-                      {o.highlights?.length ? (
-                        <ul className="highlights">
-                          {o.highlights.map((h, i) => (
-                            <li key={`food-h-${idx}-${i}`}>{h}</li>
-                          ))}
-                        </ul>
-                      ) : null}
-                      <TravelBubbles travel={o.travel} />
-                      {o.travel?.approximate ? (
-                        <div className="approxNote">Times are to the midpoint area (exact spot not found).</div>
-                      ) : null}
-                    </div>
+                    <PlaceItem
+                      key={`food-${idx}`}
+                      option={o}
+                      index={idx}
+                      idPrefix="food"
+                      showRating
+                      areaLabel={data?.area?.label ?? result?.midpoint_area}
+                    />
                   ))}
 
                   {!result?.food_options?.length && (
@@ -364,35 +690,14 @@ export default function Home() {
                 <div className="cardTitle">Activities (Top 3)</div>
                 <div className="cardBody">
                   {(result?.activity_options?.length ? result.activity_options : []).map((o, idx) => (
-                    <div className="item" key={`act-${idx}`}>
-                      <div className="itemTop">
-                        <div className="itemName">
-                          <span className="num">{idx + 1}</span>
-                          {prettyOptionName(o)}
-                        </div>
-                        <div className="itemMeta">
-                          {o.source_url ? (
-                            <a className="link" href={o.source_url} target="_blank" rel="noreferrer">
-                              Source
-                            </a>
-                          ) : null}
-                        </div>
-                      </div>
-                      {o.details || o.why || o.description ? (
-                        <div className="itemWhy">{o.details ?? o.why ?? o.description}</div>
-                      ) : null}
-                      {o.highlights?.length ? (
-                        <ul className="highlights">
-                          {o.highlights.map((h, i) => (
-                            <li key={`act-h-${idx}-${i}`}>{h}</li>
-                          ))}
-                        </ul>
-                      ) : null}
-                      <TravelBubbles travel={o.travel} />
-                      {o.travel?.approximate ? (
-                        <div className="approxNote">Times are to the midpoint area (exact spot not found).</div>
-                      ) : null}
-                    </div>
+                    <PlaceItem
+                      key={`act-${idx}`}
+                      option={o}
+                      index={idx}
+                      idPrefix="act"
+                      showRating={false}
+                      areaLabel={data?.area?.label ?? result?.midpoint_area}
+                    />
                   ))}
 
                   {!result?.activity_options?.length && (
@@ -406,6 +711,18 @@ export default function Home() {
               <summary>Raw JSON</summary>
               <pre className="json">{JSON.stringify(result, null, 2)}</pre>
             </details>
+          </section>
+        )}
+
+        {loading && (
+          <section className="placeholder" aria-label="Loading">
+            <div className="placeholderCard loadingCard">
+              <Footprints />
+              <div className="placeholderTitle">Walking to the middle…</div>
+              <div className="placeholderText">
+                Finding your midpoint, then checking travel times to each place.
+              </div>
+            </div>
           </section>
         )}
 
@@ -426,7 +743,7 @@ export default function Home() {
       </main>
 
       <style jsx>{`
-        .itemMeta {
+        :global(.itemMeta) {
           display: inline-flex;
           align-items: center;
           gap: 10px;
@@ -459,7 +776,7 @@ export default function Home() {
           color: #f5c542;
         }
 
-        .highlights {
+        :global(.highlights) {
           margin: 10px 0 0;
           padding-left: 18px;
           color: rgba(255, 255, 255, 0.68);
@@ -467,7 +784,7 @@ export default function Home() {
           line-height: 1.45;
         }
 
-        .highlights li {
+        :global(.highlights li) {
           margin: 4px 0;
         }
 
@@ -544,30 +861,30 @@ export default function Home() {
         }
 
         :global(.bubble-car .bubbleIcon) {
-          background: linear-gradient(140deg, rgba(99, 102, 241, 0.95), rgba(79, 70, 229, 0.75));
-          box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+          background: linear-gradient(140deg, rgba(37, 99, 235, 0.98), rgba(29, 78, 216, 0.8));
+          box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
         }
 
         :global(.bubble-train .bubbleIcon) {
-          background: linear-gradient(140deg, rgba(16, 185, 129, 0.95), rgba(5, 150, 105, 0.75));
-          box-shadow: 0 4px 14px rgba(16, 185, 129, 0.32);
+          background: linear-gradient(140deg, rgba(6, 182, 212, 0.98), rgba(8, 145, 178, 0.8));
+          box-shadow: 0 4px 14px rgba(6, 182, 212, 0.35);
         }
 
         :global(.bubble-bus .bubbleIcon) {
-          background: linear-gradient(140deg, rgba(244, 114, 63, 0.95), rgba(234, 88, 12, 0.75));
-          box-shadow: 0 4px 14px rgba(244, 114, 63, 0.3);
+          background: linear-gradient(140deg, rgba(56, 189, 248, 0.98), rgba(2, 132, 199, 0.82));
+          box-shadow: 0 4px 14px rgba(56, 189, 248, 0.35);
         }
 
         :global(.bubble-car:hover) {
-          border-color: rgba(99, 102, 241, 0.5);
+          border-color: rgba(37, 99, 235, 0.6);
         }
 
         :global(.bubble-train:hover) {
-          border-color: rgba(16, 185, 129, 0.5);
+          border-color: rgba(6, 182, 212, 0.6);
         }
 
         :global(.bubble-bus:hover) {
-          border-color: rgba(244, 114, 63, 0.5);
+          border-color: rgba(56, 189, 248, 0.6);
         }
 
         :global(.bubbleBody) {
@@ -591,6 +908,124 @@ export default function Home() {
           white-space: nowrap;
         }
 
+        :global(.bubble) {
+          cursor: pointer;
+          text-align: left;
+          font: inherit;
+        }
+
+        :global(.bubbleOn) {
+          background: rgba(56, 189, 248, 0.16);
+          border-color: rgba(56, 189, 248, 0.65);
+          box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.16);
+        }
+
+        :global(.itemOn) {
+          background: rgba(56, 189, 248, 0.04);
+          border-radius: 12px;
+        }
+
+        :global(.pickHint) {
+          margin-top: 10px;
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.42);
+        }
+
+        :global(.planRow) {
+          position: relative;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+          margin-top: 12px;
+        }
+
+        :global(.calendarButton) {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 9px 13px;
+          border-radius: 999px;
+          border: 1px solid rgba(125, 211, 252, 0.45);
+          background: linear-gradient(135deg, rgba(37, 99, 235, 0.9), rgba(14, 165, 233, 0.85));
+          color: #fff;
+          font-size: 13px;
+          font-weight: 620;
+          cursor: pointer;
+          box-shadow: 0 8px 22px rgba(2, 132, 199, 0.35);
+        }
+
+        :global(.calendarButton:hover) {
+          filter: brightness(1.06);
+        }
+
+        :global(.planSummary) {
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.5);
+        }
+
+        :global(.popover) {
+          position: absolute;
+          z-index: 20;
+          top: calc(100% + 8px);
+          left: 0;
+          width: min(320px, 100%);
+          display: grid;
+          gap: 10px;
+          padding: 14px;
+          border-radius: 14px;
+          background: rgba(8, 20, 40, 0.97);
+          border: 1px solid rgba(125, 211, 252, 0.28);
+          box-shadow: 0 18px 50px rgba(2, 6, 23, 0.6);
+        }
+
+        :global(.popLabel) {
+          display: grid;
+          gap: 6px;
+          font-size: 12px;
+          color: rgba(255, 255, 255, 0.72);
+        }
+
+        :global(.popInput) {
+          color-scheme: dark;
+        }
+
+        :global(.popHint) {
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.5);
+        }
+
+        :global(.popActions) {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 8px;
+        }
+
+        :global(.popButton) {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 10px;
+          border-radius: 10px;
+          border: 1px solid rgba(255, 255, 255, 0.16);
+          background: rgba(255, 255, 255, 0.07);
+          color: rgba(255, 255, 255, 0.92);
+          font-size: 12.5px;
+          font-weight: 600;
+          cursor: pointer;
+          text-decoration: none;
+        }
+
+        :global(.popButton:hover) {
+          border-color: rgba(125, 211, 252, 0.5);
+          background: rgba(56, 189, 248, 0.14);
+        }
+
+        :global(.popPrimary) {
+          background: linear-gradient(135deg, rgba(37, 99, 235, 0.95), rgba(14, 165, 233, 0.9));
+          border-color: rgba(125, 211, 252, 0.5);
+        }
+
         :global(.approxNote) {
           margin-top: 8px;
           font-size: 11px;
@@ -601,17 +1036,17 @@ export default function Home() {
           min-height: 100vh;
           position: relative;
           color: #0b1220;
-          background: #070a12;
+          background: #040a16;
         }
 
         .bg {
           position: absolute;
           inset: 0;
           background:
-            radial-gradient(900px 500px at 15% 10%, rgba(99, 102, 241, 0.35), transparent 60%),
-            radial-gradient(900px 500px at 85% 15%, rgba(16, 185, 129, 0.28), transparent 60%),
-            radial-gradient(900px 500px at 50% 90%, rgba(244, 63, 94, 0.18), transparent 60%),
-            linear-gradient(180deg, #060814 0%, #050711 55%, #040611 100%);
+            radial-gradient(900px 500px at 15% 10%, rgba(37, 99, 235, 0.38), transparent 60%),
+            radial-gradient(900px 500px at 85% 15%, rgba(14, 165, 233, 0.3), transparent 60%),
+            radial-gradient(900px 500px at 50% 90%, rgba(6, 182, 212, 0.2), transparent 60%),
+            linear-gradient(180deg, #05101f 0%, #040b18 55%, #030812 100%);
           filter: saturate(120%);
           pointer-events: none;
         }
@@ -703,8 +1138,8 @@ export default function Home() {
         }
 
         .input:focus {
-          border-color: rgba(99, 102, 241, 0.7);
-          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+          border-color: rgba(56, 189, 248, 0.75);
+          box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
         }
 
         .actions {
@@ -724,7 +1159,7 @@ export default function Home() {
           border-radius: 12px;
           border: 1px solid rgba(255, 255, 255, 0.18);
           color: rgba(255, 255, 255, 0.95);
-          background: linear-gradient(135deg, rgba(99, 102, 241, 0.9), rgba(16, 185, 129, 0.8));
+          background: linear-gradient(135deg, rgba(37, 99, 235, 0.95), rgba(14, 165, 233, 0.9));
           cursor: pointer;
           font-weight: 600;
           box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
@@ -742,19 +1177,57 @@ export default function Home() {
           transform: none;
         }
 
-        .spinner {
-          width: 14px;
-          height: 14px;
-          border-radius: 999px;
-          border: 2px solid rgba(255, 255, 255, 0.35);
-          border-top-color: rgba(255, 255, 255, 0.95);
-          animation: spin 700ms linear infinite;
+        :global(.steps) {
+          display: inline-flex;
+          align-items: flex-end;
+          gap: 8px;
+          height: 34px;
         }
 
-        @keyframes spin {
-          to {
-            transform: rotate(360deg);
+        :global(.stepsCompact) {
+          height: 18px;
+          gap: 5px;
+        }
+
+        :global(.step) {
+          display: block;
+          width: 17px;
+          height: 26px;
+          color: rgba(255, 255, 255, 0.9);
+          opacity: 0.15;
+          animation: walk 1.35s ease-in-out infinite;
+        }
+
+        :global(.stepsCompact .step) {
+          width: 8px;
+          height: 13px;
+        }
+
+        @keyframes walk {
+          0%,
+          70%,
+          100% {
+            opacity: 0.15;
           }
+          25%,
+          45% {
+            opacity: 1;
+          }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          :global(.step) {
+            animation: none;
+            opacity: 0.65;
+          }
+        }
+
+        .loadingCard {
+          display: grid;
+          justify-items: center;
+          gap: 10px;
+          text-align: center;
+          padding: 26px 16px;
         }
 
         .hint {
@@ -843,23 +1316,23 @@ export default function Home() {
           padding: 10px 14px 14px;
         }
 
-        .item {
+        :global(.item) {
           padding: 10px 0;
           border-bottom: 1px dashed rgba(255, 255, 255, 0.14);
         }
 
-        .item:last-child {
+        :global(.item:last-child) {
           border-bottom: none;
         }
 
-        .itemTop {
+        :global(.itemTop) {
           display: flex;
           align-items: baseline;
           justify-content: space-between;
           gap: 12px;
         }
 
-        .itemName {
+        :global(.itemName) {
           display: flex;
           align-items: center;
           gap: 10px;
@@ -867,7 +1340,7 @@ export default function Home() {
           color: rgba(255, 255, 255, 0.92);
         }
 
-        .num {
+        :global(.num) {
           width: 22px;
           height: 22px;
           border-radius: 999px;
@@ -875,19 +1348,19 @@ export default function Home() {
           align-items: center;
           justify-content: center;
           font-size: 12px;
-          background: rgba(99, 102, 241, 0.22);
-          border: 1px solid rgba(99, 102, 241, 0.35);
+          background: rgba(37, 99, 235, 0.28);
+          border: 1px solid rgba(56, 189, 248, 0.4);
           color: rgba(255, 255, 255, 0.9);
         }
 
-        .itemWhy {
+        :global(.itemWhy) {
           margin-top: 6px;
           color: rgba(255, 255, 255, 0.68);
           font-size: 13px;
           line-height: 1.45;
         }
 
-        .link {
+        :global(.link) {
           font-size: 12px;
           color: rgba(255, 255, 255, 0.85);
           text-decoration: none;
@@ -897,12 +1370,12 @@ export default function Home() {
           background: rgba(255, 255, 255, 0.06);
         }
 
-        .link:hover {
-          border-color: rgba(16, 185, 129, 0.45);
-          background: rgba(16, 185, 129, 0.12);
+        :global(.link:hover) {
+          border-color: rgba(56, 189, 248, 0.5);
+          background: rgba(56, 189, 248, 0.14);
         }
 
-        .empty {
+        :global(.empty) {
           color: rgba(255, 255, 255, 0.85);
           font-size: 13px;
           padding: 8px 0;
