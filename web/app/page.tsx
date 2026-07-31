@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const HOME_POSTCODE_KEY = "halfway:home-postcode";
 
@@ -705,6 +705,249 @@ function CalendarIcon() {
   );
 }
 
+/** How far a card must travel before the release counts as a decision. */
+const SWIPE_THRESHOLD = 90;
+
+function fastestOption(option: Option) {
+  const items = option.travel?.from_person_1 ?? [];
+  return items.reduce<TravelOption | null>(
+    (best, t) => (!best || t.duration_minutes < best.duration_minutes ? t : best),
+    null,
+  );
+}
+
+/**
+ * A draggable card. Pointer events cover mouse and touch alike; the buttons and
+ * arrow keys do the same job for anyone not swiping.
+ */
+function SwipeCard({
+  option,
+  showRating,
+  onDecide,
+}: {
+  option: Option;
+  showRating: boolean;
+  onDecide: (verdict: "pick" | "skip") => void;
+}) {
+  const [dx, setDx] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const [flyOut, setFlyOut] = useState<"pick" | "skip" | null>(null);
+  const startX = useRef(0);
+
+  const place = prettyOptionName(option);
+  const details = option.details ?? option.why ?? option.description;
+  const fastest = fastestOption(option);
+
+  function commit(verdict: "pick" | "skip") {
+    if (flyOut) return;
+    setFlyOut(verdict);
+    setDragging(false);
+    window.setTimeout(() => onDecide(verdict), 220);
+  }
+
+  function release() {
+    if (!dragging) return;
+    setDragging(false);
+    if (dx > SWIPE_THRESHOLD) commit("pick");
+    else if (dx < -SWIPE_THRESHOLD) commit("skip");
+    else setDx(0);
+  }
+
+  const offset = flyOut ? (flyOut === "pick" ? 700 : -700) : dx;
+  const intent = dx > 40 ? "pick" : dx < -40 ? "skip" : null;
+
+  return (
+    <div
+      className={`swipeCard ${dragging ? "swipeDragging" : ""}`}
+      style={{
+        transform: `translateX(${offset}px) rotate(${offset / 26}deg)`,
+        opacity: flyOut ? 0 : 1,
+      }}
+      onPointerDown={(e) => {
+        if (flyOut) return;
+        (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+        startX.current = e.clientX;
+        setDragging(true);
+      }}
+      onPointerMove={(e) => dragging && setDx(e.clientX - startX.current)}
+      onPointerUp={release}
+      onPointerCancel={release}
+      onKeyDown={(e) => {
+        if (e.key === "ArrowRight") commit("pick");
+        if (e.key === "ArrowLeft") commit("skip");
+      }}
+      tabIndex={0}
+      role="group"
+      aria-label={`${place}. Right arrow to choose, left arrow to skip.`}
+    >
+      <div className={`stamp stampPick ${intent === "pick" ? "stampOn" : ""}`}>Let&apos;s go</div>
+      <div className={`stamp stampSkip ${intent === "skip" ? "stampOn" : ""}`}>Nope</div>
+
+      <div className="swipeTop">
+        <div className="swipeName">{place}</div>
+        {showRating ? <Stars rating={option.rating} /> : null}
+      </div>
+
+      {details ? <div className="swipeDetails">{details}</div> : null}
+
+      {option.highlights?.length ? (
+        <ul className="highlights">
+          {option.highlights.slice(0, 3).map((h, i) => (
+            <li key={i}>{h}</li>
+          ))}
+        </ul>
+      ) : null}
+
+      <div className="swipeFooter">
+        {fastest ? (
+          <span className="swipeFastest">
+            Fastest: {fastest.duration_minutes} min by {fastest.mode.toLowerCase()}
+          </span>
+        ) : null}
+        {option.source_url ? (
+          <a
+            className="link"
+            href={option.source_url}
+            target="_blank"
+            rel="noreferrer"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            Source
+          </a>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A deck of suggestions, swiped through one at a time. Choosing one opens the
+ * full plan for it; running out offers a fresh set.
+ */
+function SwipeDeck({
+  title,
+  options,
+  idPrefix,
+  showRating,
+  areaLabel,
+  onRefresh,
+  refreshing,
+}: {
+  title: string;
+  options: Option[];
+  idPrefix: string;
+  showRating: boolean;
+  areaLabel?: string;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  const [index, setIndex] = useState(0);
+  const [chosen, setChosen] = useState<number | null>(null);
+
+  if (!options.length) {
+    return (
+      <div className="card">
+        <div className="cardTitle">{title}</div>
+        <div className="cardBody">
+          <div className="empty">Nothing returned yet.</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (chosen !== null) {
+    return (
+      <div className="card">
+        <div className="cardTitle">
+          {title}
+          <button type="button" className="linkButton deckBack" onClick={() => setChosen(null)}>
+            Back to swiping
+          </button>
+        </div>
+        <div className="cardBody">
+          <PlaceItem
+            option={options[chosen]}
+            index={chosen}
+            idPrefix={idPrefix}
+            showRating={showRating}
+            areaLabel={areaLabel}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  const current = options[index];
+  const done = index >= options.length;
+
+  return (
+    <div className="card">
+      <div className="cardTitle">
+        {title}
+        {!done ? (
+          <span className="deckCount">
+            {index + 1} of {options.length}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="cardBody">
+        {done ? (
+          <div className="deckDone">
+            <div className="deckDoneTitle">That&apos;s everything here</div>
+            <div className="deckDoneText">
+              Nothing caught your eye? Get a fresh set of suggestions.
+            </div>
+            <div className="deckDoneActions">
+              <button type="button" className="refreshButton" onClick={onRefresh} disabled={refreshing}>
+                <RefreshIcon />
+                New suggestions
+              </button>
+              <button type="button" className="linkButton" onClick={() => setIndex(0)}>
+                Start over
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="deckStage">
+              {options[index + 1] ? <div className="swipeCard swipeBehind" aria-hidden="true" /> : null}
+              <SwipeCard
+                key={index}
+                option={current}
+                showRating={showRating}
+                onDecide={(verdict) => {
+                  if (verdict === "pick") setChosen(index);
+                  else setIndex((i) => i + 1);
+                }}
+              />
+            </div>
+
+            <div className="deckActions">
+              <button
+                type="button"
+                className="deckButton deckSkip"
+                onClick={() => setIndex((i) => i + 1)}
+              >
+                ✕ Skip
+              </button>
+              <button
+                type="button"
+                className="deckButton deckPick"
+                onClick={() => setChosen(index)}
+              >
+                ♥ Let&apos;s go
+              </button>
+            </div>
+
+            <div className="deckHint">Swipe or drag — right to pick, left to skip.</div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function pad(n: number) {
   return String(n).padStart(2, "0");
 }
@@ -1022,45 +1265,32 @@ export default function Home() {
             </div>
 
             <div className={`cards ${include === "both" ? "" : "cardsSingle"}`}>
-              <div className="card" hidden={include === "activities"}>
-                <div className="cardTitle">Food (Top 3)</div>
-                <div className="cardBody">
-                  {(result?.food_options?.length ? result.food_options : []).map((o, idx) => (
-                    <PlaceItem
-                      key={`food-${idx}`}
-                      option={o}
-                      index={idx}
-                      idPrefix="food"
-                      showRating
-                      areaLabel={data?.area?.label ?? result?.midpoint_area}
-                    />
-                  ))}
+              {include !== "activities" ? (
+                <SwipeDeck
+                  // A refresh brings new suggestions, so the deck starts fresh.
+                  key={`food-${attempt}`}
+                  title="Food"
+                  options={result?.food_options ?? []}
+                  idPrefix="food"
+                  showRating
+                  areaLabel={data?.area?.label ?? result?.midpoint_area}
+                  onRefresh={() => plan({ refresh: true })}
+                  refreshing={loading}
+                />
+              ) : null}
 
-                  {!result?.food_options?.length && (
-                    <div className="empty">No food options returned yet.</div>
-                  )}
-                </div>
-              </div>
-
-              <div className="card" hidden={include === "food"}>
-                <div className="cardTitle">Activities (Top 3)</div>
-                <div className="cardBody">
-                  {(result?.activity_options?.length ? result.activity_options : []).map((o, idx) => (
-                    <PlaceItem
-                      key={`act-${idx}`}
-                      option={o}
-                      index={idx}
-                      idPrefix="act"
-                      showRating={false}
-                      areaLabel={data?.area?.label ?? result?.midpoint_area}
-                    />
-                  ))}
-
-                  {!result?.activity_options?.length && (
-                    <div className="empty">No activity options returned yet.</div>
-                  )}
-                </div>
-              </div>
+              {include !== "food" ? (
+                <SwipeDeck
+                  key={`act-${attempt}`}
+                  title="Activities"
+                  options={result?.activity_options ?? []}
+                  idPrefix="act"
+                  showRating={false}
+                  areaLabel={data?.area?.label ?? result?.midpoint_area}
+                  onRefresh={() => plan({ refresh: true })}
+                  refreshing={loading}
+                />
+              ) : null}
             </div>
 
             <div className="refreshRow">
@@ -1385,6 +1615,204 @@ export default function Home() {
           margin-top: 10px;
           font-size: 11px;
           color: rgba(255, 255, 255, 0.42);
+        }
+
+        :global(.cardTitle) {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 12px;
+        }
+
+        :global(.deckCount) {
+          font-size: 11px;
+          font-weight: 500;
+          color: rgba(255, 255, 255, 0.45);
+        }
+
+        :global(.deckBack) {
+          font-weight: 500;
+        }
+
+        :global(.deckStage) {
+          position: relative;
+          min-height: 216px;
+          display: grid;
+          padding: 4px 0 8px;
+        }
+
+        :global(.swipeCard) {
+          grid-area: 1 / 1;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          padding: 16px;
+          border-radius: 18px;
+          border: 1px solid rgba(125, 211, 252, 0.24);
+          background: linear-gradient(160deg, rgba(15, 34, 62, 0.96), rgba(9, 20, 38, 0.96));
+          box-shadow: 0 16px 40px rgba(2, 6, 23, 0.5);
+          cursor: grab;
+          touch-action: pan-y;
+          user-select: none;
+          position: relative;
+          overflow: hidden;
+          transition: transform 220ms ease, opacity 220ms ease;
+        }
+
+        :global(.swipeDragging) {
+          cursor: grabbing;
+          transition: none;
+        }
+
+        :global(.swipeCard:focus-visible) {
+          outline: 2px solid rgba(125, 211, 252, 0.8);
+          outline-offset: 2px;
+        }
+
+        /* The next card, peeking out behind the current one. */
+        :global(.swipeBehind) {
+          transform: translateY(10px) scale(0.965);
+          opacity: 0.5;
+          box-shadow: none;
+          cursor: default;
+        }
+
+        :global(.stamp) {
+          position: absolute;
+          top: 14px;
+          padding: 5px 11px;
+          border-radius: 8px;
+          font-size: 12px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          opacity: 0;
+          transition: opacity 120ms ease;
+          pointer-events: none;
+        }
+
+        :global(.stampOn) {
+          opacity: 1;
+        }
+
+        :global(.stampPick) {
+          right: 14px;
+          color: #6ee7b7;
+          border: 2px solid rgba(110, 231, 183, 0.8);
+          transform: rotate(12deg);
+        }
+
+        :global(.stampSkip) {
+          left: 14px;
+          color: #fda4af;
+          border: 2px solid rgba(253, 164, 175, 0.8);
+          transform: rotate(-12deg);
+        }
+
+        :global(.swipeTop) {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 12px;
+        }
+
+        :global(.swipeName) {
+          font-size: 17px;
+          font-weight: 700;
+          color: rgba(255, 255, 255, 0.95);
+        }
+
+        :global(.swipeDetails) {
+          font-size: 13px;
+          line-height: 1.5;
+          color: rgba(255, 255, 255, 0.72);
+        }
+
+        :global(.swipeFooter) {
+          margin-top: auto;
+          padding-top: 8px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        :global(.swipeFastest) {
+          font-size: 12px;
+          color: rgba(186, 230, 253, 0.9);
+        }
+
+        :global(.deckActions) {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+          margin-top: 4px;
+        }
+
+        :global(.deckButton) {
+          padding: 11px 14px;
+          border-radius: 999px;
+          font-size: 13px;
+          font-weight: 650;
+          cursor: pointer;
+          border: 1px solid rgba(255, 255, 255, 0.16);
+          background: rgba(255, 255, 255, 0.06);
+          color: rgba(255, 255, 255, 0.9);
+          transition: background 140ms ease, border-color 140ms ease;
+        }
+
+        :global(.deckSkip:hover) {
+          border-color: rgba(253, 164, 175, 0.55);
+          background: rgba(253, 164, 175, 0.12);
+        }
+
+        :global(.deckPick) {
+          border-color: rgba(125, 211, 252, 0.5);
+          background: linear-gradient(135deg, rgba(37, 99, 235, 0.9), rgba(14, 165, 233, 0.85));
+        }
+
+        :global(.deckPick:hover) {
+          filter: brightness(1.06);
+        }
+
+        :global(.deckHint) {
+          margin-top: 10px;
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.4);
+          text-align: center;
+        }
+
+        :global(.deckDone) {
+          display: grid;
+          gap: 8px;
+          justify-items: center;
+          text-align: center;
+          padding: 26px 8px;
+        }
+
+        :global(.deckDoneTitle) {
+          font-weight: 700;
+          color: rgba(255, 255, 255, 0.92);
+        }
+
+        :global(.deckDoneText) {
+          font-size: 13px;
+          color: rgba(255, 255, 255, 0.6);
+        }
+
+        :global(.deckDoneActions) {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+          justify-content: center;
+          margin-top: 4px;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          :global(.swipeCard) {
+            transition: none;
+          }
         }
 
         :global(.basisNote) {
@@ -1839,7 +2267,7 @@ export default function Home() {
           margin-top: 14px;
         }
 
-        .card {
+        :global(.card) {
           border-radius: 16px;
           background: rgba(255, 255, 255, 0.08);
           border: 1px solid rgba(255, 255, 255, 0.12);
@@ -1848,14 +2276,14 @@ export default function Home() {
           overflow: hidden;
         }
 
-        .cardTitle {
+        :global(.cardTitle) {
           padding: 12px 14px;
           font-weight: 700;
           color: rgba(255, 255, 255, 0.92);
           border-bottom: 1px solid rgba(255, 255, 255, 0.10);
         }
 
-        .cardBody {
+        :global(.cardBody) {
           padding: 10px 14px 14px;
         }
 
