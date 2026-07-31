@@ -130,10 +130,8 @@ export default function Home() {
 
       <main className="container">
         <header className="header">
-          <h1 className="title">Half-way Planner</h1>
-          <p className="subtitle">
-            Enter two postcodes and get a midpoint area with food + activity ideas.
-          </p>
+          <h1 className="title">Halfway</h1>
+          <p className="subtitle">Split the distance, double the fun.</p>
         </header>
 
         <section className="panel" aria-label="Inputs">
