@@ -86,6 +86,108 @@ function estimateTravelOptions(distanceKm: number, drivingMinutes: number): Trav
   return opts.sort((a, b) => a.duration_minutes - b.duration_minutes);
 }
 
+type LatLon = { lat: number; lon: number };
+
+// Nominatim asks for a descriptive User-Agent and no more than 1 request/sec.
+async function geocodeVenue(name: string, district: string, region: string): Promise<LatLon | null> {
+  const query = `${name}, ${district}, ${region}, United Kingdom`;
+  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(
+    query,
+  )}`;
+
+  try {
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: { "user-agent": "Halfway/0.1 (meetup planner prototype)" },
+    });
+    if (!res.ok) return null;
+
+    const data = (await res.json()) as Array<{ lat: string; lon: string }>;
+    const hit = data?.[0];
+    if (!hit) return null;
+
+    const lat = Number(hit.lat);
+    const lon = Number(hit.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+    return { lat, lon };
+  } catch {
+    return null;
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function travelToPoint(from: LatLon, to: LatLon) {
+  const distanceKm = haversineKm(from.lat, from.lon, to.lat, to.lon);
+  const driving = await osrmDurationMinutes(from, to).catch(() =>
+    Math.max(8, Math.round((distanceKm / 22) * 60)),
+  );
+  return estimateTravelOptions(distanceKm, driving);
+}
+
+function sameTimings(a: TravelOption[], b: TravelOption[]) {
+  if (a.length !== b.length) return false;
+  return a.every((opt, i) => opt.mode === b[i].mode && opt.duration_minutes === b[i].duration_minutes);
+}
+
+/**
+ * Geocodes each suggested venue and works out per-person travel times to it.
+ * Falls back to the midpoint-area estimate when a venue can't be located, and
+ * flags that case so the UI can say the numbers are approximate.
+ */
+async function attachTravelToOptions(
+  options: Array<Record<string, unknown>>,
+  people: { p1: LatLon; p2: LatLon },
+  area: { district: string; region: string },
+  fallback: { from_person_1: TravelOption[]; from_person_2: TravelOption[] },
+) {
+  if (!Array.isArray(options)) return [];
+
+  const out = [];
+
+  for (const option of options) {
+    const name = option?.name ?? option?.title;
+    const point = name ? await geocodeVenue(String(name), area.district, area.region) : null;
+
+    if (!point) {
+      out.push({
+        ...option,
+        travel: {
+          from_person_1: fallback.from_person_1,
+          from_person_2: fallback.from_person_2,
+          same: sameTimings(fallback.from_person_1, fallback.from_person_2),
+          approximate: true,
+        },
+      });
+      continue;
+    }
+
+    const [fromP1, fromP2] = await Promise.all([
+      travelToPoint(people.p1, point),
+      travelToPoint(people.p2, point),
+    ]);
+
+    out.push({
+      ...option,
+      location: point,
+      travel: {
+        from_person_1: fromP1,
+        from_person_2: fromP2,
+        same: sameTimings(fromP1, fromP2),
+        approximate: false,
+      },
+    });
+
+    // Stay within Nominatim's rate limit.
+    await sleep(1100);
+  }
+
+  return out;
+}
+
 async function latLonToArea(lat: number, lon: number) {
   const url = `https://api.postcodes.io/postcodes?lon=${encodeURIComponent(
     String(lon),
@@ -242,6 +344,16 @@ export async function POST(req: Request) {
       preferences: body.preferences,
     });
 
+    const fallbackTravel = {
+      from_person_1: travel_from_person_1,
+      from_person_2: travel_from_person_2,
+    };
+
+    const [foodWithTravel, activitiesWithTravel] = await Promise.all([
+      attachTravelToOptions(formatted?.food_options, { p1: a, p2: b }, area, fallbackTravel),
+      attachTravelToOptions(formatted?.activity_options, { p1: a, p2: b }, area, fallbackTravel),
+    ]);
+
     return NextResponse.json({
       ok: true,
       inputs: { postcode1: p1, postcode2: p2 },
@@ -253,7 +365,11 @@ export async function POST(req: Request) {
         recommended_mode_person_1,
         recommended_mode_person_2,
       },
-      result: formatted,
+      result: {
+        ...formatted,
+        food_options: foodWithTravel,
+        activity_options: activitiesWithTravel,
+      },
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Unknown error" }, { status: 500 });
