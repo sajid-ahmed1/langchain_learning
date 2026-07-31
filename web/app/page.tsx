@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+const HOME_POSTCODE_KEY = "halfway:home-postcode";
 
 type TravelOption = { mode: string; duration_minutes: number; notes: string };
 
@@ -405,6 +407,25 @@ function Footprints({ compact = false }: { compact?: boolean }) {
   );
 }
 
+function RefreshIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 11a8 8 0 1 0-.6 4" />
+      <path d="M20 4v7h-7" />
+    </svg>
+  );
+}
+
 function CalendarIcon() {
   return (
     <svg
@@ -536,26 +557,75 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [savedPostcode, setSavedPostcode] = useState<string | null>(null);
+  // Names already shown, so "Show me different options" can ask for new ones.
+  const [seen, setSeen] = useState<string[]>([]);
+  const [attempt, setAttempt] = useState(0);
+
+  // Read the saved postcode after mount; localStorage isn't available on the server.
+  useEffect(() => {
+    const stored = window.localStorage.getItem(HOME_POSTCODE_KEY);
+    if (!stored) return;
+    setSavedPostcode(stored);
+    setPostcode1((current) => (current ? current : stored));
+  }, []);
+
+  function saveHomePostcode() {
+    const value = postcode1.trim();
+    if (!value) return;
+    window.localStorage.setItem(HOME_POSTCODE_KEY, value);
+    setSavedPostcode(value);
+  }
+
+  function clearHomePostcode() {
+    window.localStorage.removeItem(HOME_POSTCODE_KEY);
+    setSavedPostcode(null);
+  }
 
   const canSubmit = useMemo(() => {
     return postcode1.trim().length > 0 && postcode2.trim().length > 0 && !loading;
   }, [postcode1, postcode2, loading]);
 
-  async function plan() {
+  /**
+   * Runs a plan. A refresh keeps the postcodes and preferences exactly as they
+   * are and only asks for suggestions other than the ones already seen.
+   */
+  async function plan({ refresh = false }: { refresh?: boolean } = {}) {
+    const nextAttempt = refresh ? attempt + 1 : 0;
+    const exclude = refresh ? seen : [];
+
     setLoading(true);
     setError(null);
     setData(null);
+    setAttempt(nextAttempt);
+    if (!refresh) setSeen([]);
 
     try {
       const res = await fetch("/api/plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ postcode1, postcode2, preferences, include }),
+        body: JSON.stringify({
+          postcode1,
+          postcode2,
+          preferences,
+          include,
+          exclude,
+          attempt: nextAttempt,
+        }),
       });
 
       const json = (await res.json()) as ApiResponse;
       if (!res.ok) throw new Error((json as any)?.error ?? "Request failed");
       setData(json);
+
+      const names = [
+        ...(json.result?.food_options ?? []),
+        ...(json.result?.activity_options ?? []),
+      ]
+        .map((o) => o.name ?? o.title)
+        .filter((n): n is string => Boolean(n));
+
+      setSeen((prev) => Array.from(new Set([...(refresh ? prev : []), ...names])));
     } catch (e: any) {
       setError(e?.message ?? "Unknown error");
     } finally {
@@ -566,6 +636,8 @@ export default function Home() {
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter" && canSubmit) plan();
   }
+
+  const postcode1Saved = Boolean(savedPostcode) && savedPostcode === postcode1.trim();
 
   const result = data?.result as ApiResult | undefined;
 
@@ -581,9 +653,33 @@ export default function Home() {
 
         <section className="panel" aria-label="Inputs">
           <div className="grid">
-            <label className="field">
-              <span className="label">Person 1 postcode</span>
+            {/* Not a wrapping <label>: an interactive control inside one breaks
+                the implicit label/input association. */}
+            <div className="field">
+              <span className="labelRow">
+                <label className="label" htmlFor="postcode1">
+                  Person 1 postcode
+                </label>
+                {postcode1Saved ? (
+                  <span className="saveState">
+                    <span className="savedTag">Saved</span>
+                    <button type="button" className="linkButton" onClick={clearHomePostcode}>
+                      Forget
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="linkButton"
+                    onClick={saveHomePostcode}
+                    disabled={!postcode1.trim()}
+                  >
+                    Save this postcode
+                  </button>
+                )}
+              </span>
               <input
+                id="postcode1"
                 className="input"
                 value={postcode1}
                 onChange={(e) => setPostcode1(e.target.value)}
@@ -591,7 +687,7 @@ export default function Home() {
                 placeholder="e.g. E1 1HJ"
                 autoComplete="postal-code"
               />
-            </label>
+            </div>
 
             <label className="field">
               <span className="label">Person 2 postcode</span>
@@ -631,7 +727,7 @@ export default function Home() {
           </div>
 
           <div className="actions">
-            <button className="button" onClick={plan} disabled={!canSubmit}>
+            <button className="button" onClick={() => plan()} disabled={!canSubmit}>
               {loading ? (
                 <>
                   <Footprints compact />
@@ -705,6 +801,21 @@ export default function Home() {
                   )}
                 </div>
               </div>
+            </div>
+
+            <div className="refreshRow">
+              <button
+                type="button"
+                className="refreshButton"
+                onClick={() => plan({ refresh: true })}
+                disabled={loading}
+              >
+                <RefreshIcon />
+                Show me different options
+              </button>
+              <span className="refreshHint">
+                Keeps your postcodes and preferences — just swaps the suggestions.
+              </span>
             </div>
 
             <details className="raw">
@@ -786,6 +897,91 @@ export default function Home() {
 
         :global(.highlights li) {
           margin: 4px 0;
+        }
+
+        /* Sits next to its own label — pushing it to the column edge would put it
+           right beside the Person 2 label. */
+        .labelRow {
+          display: flex;
+          align-items: baseline;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+
+        .saveState {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .savedTag {
+          font-size: 11px;
+          padding: 2px 8px;
+          border-radius: 999px;
+          color: rgba(186, 230, 253, 0.95);
+          background: rgba(56, 189, 248, 0.16);
+          border: 1px solid rgba(56, 189, 248, 0.4);
+        }
+
+        .linkButton {
+          background: none;
+          border: none;
+          padding: 0;
+          font: inherit;
+          font-size: 11px;
+          color: rgba(125, 211, 252, 0.9);
+          cursor: pointer;
+          text-decoration: underline;
+          text-underline-offset: 2px;
+        }
+
+        .linkButton:hover:not(:disabled) {
+          color: rgba(186, 230, 253, 1);
+        }
+
+        .linkButton:disabled {
+          color: rgba(255, 255, 255, 0.3);
+          cursor: not-allowed;
+          text-decoration: none;
+        }
+
+        .refreshRow {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+          margin-top: 16px;
+        }
+
+        .refreshButton {
+          display: inline-flex;
+          align-items: center;
+          gap: 9px;
+          padding: 11px 16px;
+          border-radius: 999px;
+          border: 1px solid rgba(125, 211, 252, 0.35);
+          background: rgba(56, 189, 248, 0.1);
+          color: rgba(224, 242, 254, 0.95);
+          font-size: 13px;
+          font-weight: 620;
+          cursor: pointer;
+          transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+        }
+
+        .refreshButton:hover:not(:disabled) {
+          background: rgba(56, 189, 248, 0.18);
+          border-color: rgba(125, 211, 252, 0.6);
+          transform: translateY(-1px);
+        }
+
+        .refreshButton:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .refreshHint {
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.45);
         }
 
         .select {
