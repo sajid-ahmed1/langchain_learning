@@ -4,7 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 
 const HOME_POSTCODE_KEY = "halfway:home-postcode";
 
-type TravelOption = { mode: string; duration_minutes: number; notes: string };
+type TravelOption = {
+  mode: string;
+  duration_minutes: number;
+  notes: string;
+  basis?: "routed" | "estimated";
+};
 
 type OptionTravel = {
   from_person_1?: TravelOption[];
@@ -128,7 +133,13 @@ const MODE_ORDER = ["Car", "Train", "Bus"];
  * is a single postcode usable as a map starting point (the shown label can name
  * both people when their journeys are identical).
  */
-type Choice = { mode: string; minutes: number; origin: string; originQuery: string };
+type Choice = {
+  mode: string;
+  minutes: number;
+  origin: string;
+  originQuery: string;
+  notes: string;
+};
 
 function BubbleRow({
   label,
@@ -166,12 +177,15 @@ function BubbleRow({
               className={`bubble bubble-${mode.toLowerCase()} ${isSelected ? "bubbleOn" : ""}`}
               key={mode}
               aria-pressed={isSelected}
+              // Hovering shows what makes up the number.
+              title={match.notes}
               onClick={() =>
                 onSelect({
                   mode: match.mode,
                   minutes: match.duration_minutes,
                   origin,
                   originQuery,
+                  notes: match.notes,
                 })
               }
             >
@@ -370,6 +384,8 @@ function PlaceItem({
       {option.travel?.approximate ? (
         <div className="approxNote">Times are to the midpoint area (exact spot not found).</div>
       ) : null}
+
+      {choice ? <div className="basisNote">{choice.notes}</div> : null}
 
       {choice ? (
         <div className="journeyRow">
@@ -1371,6 +1387,12 @@ export default function Home() {
           color: rgba(255, 255, 255, 0.42);
         }
 
+        :global(.basisNote) {
+          margin-top: 10px;
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.45);
+        }
+
         :global(.journeyRow) {
           display: flex;
           align-items: center;
@@ -1484,12 +1506,13 @@ export default function Home() {
           color: rgba(255, 255, 255, 0.5);
         }
 
+        /* In flow rather than absolutely positioned: on the last card item an
+           absolute popover was clipped by the card's overflow and fell outside
+           it entirely. Letting it expand the card keeps it visible everywhere. */
         :global(.popover) {
-          position: absolute;
-          z-index: 20;
-          top: calc(100% + 8px);
-          left: 0;
-          width: min(320px, 100%);
+          flex-basis: 100%;
+          width: min(340px, 100%);
+          margin-top: 4px;
           display: grid;
           gap: 10px;
           padding: 14px;

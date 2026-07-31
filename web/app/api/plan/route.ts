@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { buildTravelOptions, DETOUR_FACTOR, type TravelOption } from "./travel";
 
 type PlanInclude = "both" | "food" | "activities";
 
@@ -61,36 +62,36 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   return R * c;
 }
 
-type TravelOption = { mode: string; duration_minutes: number; notes: string };
-
-async function osrmDurationMinutes(
-  start: { lat: number; lon: number },
-  end: { lat: number; lon: number },
-) {
+/** Road duration *and* distance — the distance is what the transit model needs. */
+async function osrmRoute(start: { lat: number; lon: number }, end: { lat: number; lon: number }) {
   const url = `https://router.project-osrm.org/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}?overview=false`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
     throw new Error(`OSRM error: ${res.status}`);
   }
   const data = await res.json();
-  const seconds = data?.routes?.[0]?.duration;
-  if (!seconds) throw new Error("Missing OSRM duration");
-  return Math.max(5, Math.round(seconds / 60));
+  const route = data?.routes?.[0];
+  if (!route?.duration) throw new Error("Missing OSRM duration");
+
+  return {
+    minutes: Math.max(5, Math.round(route.duration / 60)),
+    km: typeof route.distance === "number" ? route.distance / 1000 : null,
+  };
 }
 
-function estimateTravelOptions(distanceKm: number, drivingMinutes: number): TravelOption[] {
-  // Prototype estimates for London. Sorted by time.
-  const car = drivingMinutes;
-  const train = Math.max(14, Math.round((distanceKm / 36) * 60) + 10);
-  const bus = Math.max(18, Math.round((distanceKm / 14) * 60) + 8);
+/**
+ * Travel options between two points, preferring real road routing and falling
+ * back to a detour-adjusted straight line when OSRM is unavailable.
+ */
+async function travelBetween(start: { lat: number; lon: number }, end: { lat: number; lon: number }) {
+  const straightKm = haversineKm(start.lat, start.lon, end.lat, end.lon);
 
-  const opts: TravelOption[] = [
-    { mode: "Car", duration_minutes: car, notes: "Live driving estimate" },
-    { mode: "Train", duration_minutes: train, notes: "Includes walk/wait time" },
-    { mode: "Bus", duration_minutes: bus, notes: "Slower but cheaper" },
-  ];
+  const routed = await osrmRoute(start, end).catch(() => null);
 
-  return opts.sort((a, b) => a.duration_minutes - b.duration_minutes);
+  const networkKm = routed?.km ?? straightKm * DETOUR_FACTOR;
+  const drivingMinutes = routed?.minutes ?? Math.max(8, Math.round((networkKm / 22) * 60));
+
+  return buildTravelOptions(networkKm, drivingMinutes, Boolean(routed));
 }
 
 type LatLon = { lat: number; lon: number };
@@ -125,14 +126,6 @@ async function geocodeVenue(name: string, district: string, region: string): Pro
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function travelToPoint(from: LatLon, to: LatLon) {
-  const distanceKm = haversineKm(from.lat, from.lon, to.lat, to.lon);
-  const driving = await osrmDurationMinutes(from, to).catch(() =>
-    Math.max(8, Math.round((distanceKm / 22) * 60)),
-  );
-  return estimateTravelOptions(distanceKm, driving);
 }
 
 function sameTimings(a: TravelOption[], b: TravelOption[]) {
@@ -181,8 +174,8 @@ async function attachTravelToOptions(
     }
 
     const [fromP1, fromP2] = await Promise.all([
-      travelToPoint(people.p1, point),
-      travelToPoint(people.p2, point),
+      travelBetween(people.p1, point),
+      travelBetween(people.p2, point),
     ]);
 
     out.push({
@@ -403,16 +396,10 @@ export async function POST(req: Request) {
     const mid = midpoint(a.lat, a.lon, b.lat, b.lon);
     const area = await latLonToArea(mid.lat, mid.lon);
 
-    const d1 = haversineKm(a.lat, a.lon, mid.lat, mid.lon);
-    const d2 = haversineKm(b.lat, b.lon, mid.lat, mid.lon);
-
-    const [drive1, drive2] = await Promise.all([
-      osrmDurationMinutes(a, mid).catch(() => Math.max(8, Math.round((d1 / 22) * 60))),
-      osrmDurationMinutes(b, mid).catch(() => Math.max(8, Math.round((d2 / 22) * 60))),
+    const [travel_from_person_1, travel_from_person_2] = await Promise.all([
+      travelBetween(a, mid),
+      travelBetween(b, mid),
     ]);
-
-    const travel_from_person_1 = estimateTravelOptions(d1, drive1);
-    const travel_from_person_2 = estimateTravelOptions(d2, drive2);
 
     const recommended_mode_person_1 = travel_from_person_1[0]?.mode ?? null;
     const recommended_mode_person_2 = travel_from_person_2[0]?.mode ?? null;
