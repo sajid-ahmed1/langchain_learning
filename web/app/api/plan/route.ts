@@ -7,6 +7,10 @@ type PlanRequest = {
   postcode2: string;
   preferences?: string;
   include?: PlanInclude;
+  /** Names already shown, so a refresh returns something new. */
+  exclude?: string[];
+  /** Which refresh this is; used to vary the search wording. */
+  attempt?: number;
 };
 
 type PostcodesIoSingle = {
@@ -306,12 +310,14 @@ async function formatWithOpenAI(payload: {
   activitySearch: any;
   preferences?: string;
   include: PlanInclude;
+  exclude?: string[];
 }) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error("Missing OPENAI_API_KEY");
 
   const wantsFood = payload.include !== "activities";
   const wantsActivities = payload.include !== "food";
+  const exclude = payload.exclude?.filter(Boolean) ?? [];
 
   const system = `You are a meetup coordinator. Use the provided web search results to produce a practical meetup plan.
 
@@ -337,11 +343,21 @@ For each activity option include:
 - highlights: string[] (2–4 concise bullets)
 - source_url: string | null
 
-Do not invent ratings; only include a rating if it appears in the search results. If unsure, use null.`;
+Do not invent ratings; only include a rating if it appears in the search results. If unsure, use null.${
+    exclude.length
+      ? `
+
+The user has already been shown the places listed in already_suggested and wants
+different ones. Do not return any of them again. If the search results genuinely
+do not contain enough alternatives, return the closest new options you can find
+rather than repeating a listed name.`
+      : ""
+  }`;
 
   const user = {
     area: payload.area,
     preferences: payload.preferences ?? "",
+    already_suggested: exclude,
     food_search_results: payload.foodSearch,
     activity_search_results: payload.activitySearch,
   };
@@ -406,11 +422,29 @@ export async function POST(req: Request) {
     const wantsFood = include !== "activities";
     const wantsActivities = include !== "food";
 
+    const exclude = Array.isArray(body.exclude) ? body.exclude.slice(0, 40) : [];
+    const attempt = Number.isFinite(body.attempt) ? Number(body.attempt) : 0;
+
+    // Rotate the wording on each refresh so the search surfaces different places
+    // rather than the same top hits the model has already used.
+    const foodAngles = [
+      "Top halal-friendly restaurants",
+      "Highly rated independent restaurants and cafes",
+      "Hidden gem places to eat",
+      "Popular casual dining spots",
+    ];
+    const activityAngles = [
+      "Beginner-friendly activities",
+      "Fun things to do",
+      "Unusual or lesser-known activities",
+      "Indoor activities and experiences",
+    ];
+
     const foodQuery =
-      `Top halal-friendly restaurants near ${area.precise}, ${area.district}, ${area.region}. ` +
+      `${foodAngles[attempt % foodAngles.length]} near ${area.precise}, ${area.district}, ${area.region}. ` +
       `Prefer Indian/Chinese/American/burgers/vegan/vegetarian. Include rating >= 4.3 if available.`;
     const activityQuery =
-      `Beginner-friendly activities near ${area.precise}, ${area.district}, ${area.region}. ` +
+      `${activityAngles[attempt % activityAngles.length]} near ${area.precise}, ${area.district}, ${area.region}. ` +
       `Reasonably priced, good reviews.`;
 
     const [foodSearch, activitySearch] = await Promise.all([
@@ -424,6 +458,7 @@ export async function POST(req: Request) {
       activitySearch,
       preferences: body.preferences,
       include,
+      exclude,
     });
 
     const fallbackTravel = {
