@@ -28,6 +28,8 @@ type Option = {
   rating?: number | null;
   highlights?: string[];
   travel?: OptionTravel;
+  /** Present when the venue was successfully geocoded. */
+  location?: { lat: number; lon: number };
 };
 
 type ApiResult = {
@@ -121,18 +123,24 @@ function ModeIcon({ mode }: { mode: string }) {
 // Keep a stable left-to-right order rather than the API's sort-by-time.
 const MODE_ORDER = ["Car", "Train", "Bus"];
 
-/** A picked way of getting to one venue, used to build the calendar entry. */
-type Choice = { mode: string; minutes: number; origin: string };
+/**
+ * A picked way of getting to one venue. `origin` is what we show; `originQuery`
+ * is a single postcode usable as a map starting point (the shown label can name
+ * both people when their journeys are identical).
+ */
+type Choice = { mode: string; minutes: number; origin: string; originQuery: string };
 
 function BubbleRow({
   label,
   origin,
+  originQuery,
   items,
   selected,
   onSelect,
 }: {
   label: string;
   origin: string;
+  originQuery: string;
   items?: TravelOption[];
   selected?: Choice | null;
   onSelect: (choice: Choice) => void;
@@ -159,7 +167,12 @@ function BubbleRow({
               key={mode}
               aria-pressed={isSelected}
               onClick={() =>
-                onSelect({ mode: match.mode, minutes: match.duration_minutes, origin })
+                onSelect({
+                  mode: match.mode,
+                  minutes: match.duration_minutes,
+                  origin,
+                  originQuery,
+                })
               }
             >
               <span className="bubbleIcon">
@@ -208,6 +221,7 @@ function TravelBubbles({
         <BubbleRow
           label={`From ${bothOrigins}${to}`}
           origin={bothOrigins}
+          originQuery={travel?.origin_1 ?? ""}
           items={p1}
           selected={selected}
           onSelect={onSelect}
@@ -221,6 +235,7 @@ function TravelBubbles({
       <BubbleRow
         label={`From ${origin1}${to}`}
         origin={origin1}
+        originQuery={travel?.origin_1 ?? ""}
         items={p1}
         selected={selected}
         onSelect={onSelect}
@@ -228,6 +243,7 @@ function TravelBubbles({
       <BubbleRow
         label={`From ${origin2}${to}`}
         origin={origin2}
+        originQuery={travel?.origin_2 ?? ""}
         items={p2}
         selected={selected}
         onSelect={onSelect}
@@ -266,6 +282,9 @@ function PlaceItem({
   }, [when]);
 
   const event = choice ? buildEvent(place, areaLabel, choice, start) : null;
+  const maps = choice
+    ? directionsUrls({ choice, place, areaLabel, location: option.location })
+    : null;
 
   return (
     <div className={`item ${choice ? "itemOn" : ""}`}>
@@ -309,6 +328,26 @@ function PlaceItem({
 
       {option.travel?.approximate ? (
         <div className="approxNote">Times are to the midpoint area (exact spot not found).</div>
+      ) : null}
+
+      {choice ? (
+        <div className="journeyRow">
+          <span className="journeyLabel">
+            <MapPinIcon />
+            See the {choice.mode.toLowerCase()} journey from {choice.originQuery || choice.origin}:
+          </span>
+          <a
+            className="mapButton"
+            href={maps?.google}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Google Maps
+          </a>
+          <a className="mapButton" href={maps?.apple} target="_blank" rel="noreferrer">
+            Apple Maps
+          </a>
+        </div>
       ) : null}
 
       {choice && event ? (
@@ -404,6 +443,63 @@ function Footprints({ compact = false }: { compact?: boolean }) {
         </span>
       ))}
     </span>
+  );
+}
+
+/**
+ * Directions links for the chosen mode. Coordinates are used as the destination
+ * when the venue was geocoded, since a bare venue name can land on the wrong
+ * branch. Both map apps only offer one combined "transit" mode, so train and bus
+ * open the same public-transport view.
+ */
+function directionsUrls({
+  choice,
+  place,
+  areaLabel,
+  location,
+}: {
+  choice: Choice;
+  place: string;
+  areaLabel?: string;
+  location?: { lat: number; lon: number };
+}) {
+  const origin = choice.originQuery;
+  const destination = location
+    ? `${location.lat},${location.lon}`
+    : [place, areaLabel].filter(Boolean).join(", ");
+
+  const driving = choice.mode.toLowerCase() === "car";
+
+  const google =
+    `https://www.google.com/maps/dir/?api=1` +
+    `&origin=${encodeURIComponent(origin)}` +
+    `&destination=${encodeURIComponent(destination)}` +
+    `&travelmode=${driving ? "driving" : "transit"}`;
+
+  const apple =
+    `https://maps.apple.com/?saddr=${encodeURIComponent(origin)}` +
+    `&daddr=${encodeURIComponent(destination)}` +
+    `&dirflg=${driving ? "d" : "r"}`;
+
+  return { google, apple };
+}
+
+function MapPinIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 21s7-5.4 7-11a7 7 0 1 0-14 0c0 5.6 7 11 7 11z" />
+      <circle cx="12" cy="10" r="2.6" />
+    </svg>
   );
 }
 
@@ -1125,6 +1221,41 @@ export default function Home() {
           margin-top: 10px;
           font-size: 11px;
           color: rgba(255, 255, 255, 0.42);
+        }
+
+        :global(.journeyRow) {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+          margin-top: 12px;
+        }
+
+        :global(.journeyLabel) {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.55);
+        }
+
+        :global(.mapButton) {
+          display: inline-flex;
+          align-items: center;
+          padding: 7px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(125, 211, 252, 0.32);
+          background: rgba(56, 189, 248, 0.09);
+          color: rgba(224, 242, 254, 0.95);
+          font-size: 12px;
+          font-weight: 600;
+          text-decoration: none;
+          transition: background 140ms ease, border-color 140ms ease;
+        }
+
+        :global(.mapButton:hover) {
+          background: rgba(56, 189, 248, 0.18);
+          border-color: rgba(125, 211, 252, 0.6);
         }
 
         :global(.planRow) {
